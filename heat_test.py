@@ -5,6 +5,7 @@ finite elements
 #Global imports
 from firedrake import *
 from firedrake.petsc import PETSc
+from firedrake.dmhooks import get_function_space
 import matplotlib.pylab as plt
 from time import time
 
@@ -15,88 +16,85 @@ class CyclicReduction(PCBase):
     def initialize(self, pc):
         # Get context from pc
         _, P = pc.getOperators()
-        #print(type(pc))
-        #print(dir(pc))
         dm = pc.getDM()
-        print(type(dm))
-        print(dir(dm))
         self.prefix = pc.getOptionsPrefix() + self._prefix
+        # # Extract function space and mesh to obtain plex and indexing functions
+        # print("Arrivo!")
+        # V = get_function_space(dm)
+        # print("Arriva!")
+        # # Obtain patches from user defined function
+        # ises = self.get_patches(V)
+        # print("Arrivex")
+        # # PCASM expects at least one patch, so we define an empty one on idle processes
+        # if len(ises) == 0:
+        #     ises = [PETSc.IS().createGeneral(numpy.empty(0, dtype=IntType), comm=PETSc.COMM_SELF)]
+        # # Create new PC object as ASM type and set index sets for patches
+        # asmpc = PETSc.PC().create(comm=pc.comm)
+        # asmpc.incrementTabLevel(1, parent=pc)
+        # asmpc.setOptionsPrefix(self.prefix + "sub_")
+        # asmpc.setOperators(*pc.getOperators())
 
-        # Extract function space and mesh to obtain plex and indexing functions
-        V = functionspace(dm)
+        # opts = PETSc.Options(self.prefix)
+        # backend = opts.getString("backend", default="petscasm").lower()
+        # # Either use PETSc's ASM PC or use TinyASM (as simple ASM
+        # # implementation designed to be fast for small block sizes).
+        # if backend == "petscasm":
+        #     asmpc.setType(asmpc.Type.ASM)
+        #     # Set default solver parameters
+        #     asmpc.setASMType(PETSc.PC.ASMType.BASIC)
+        #     sub_opts = PETSc.Options(asmpc.getOptionsPrefix())
+        #     if "sub_pc_type" not in sub_opts:
+        #         sub_opts["sub_pc_type"] = "lu"
+        #     if "sub_pc_factor_mat_ordering_type" not in sub_opts:
+        #         # Preserve the natural ordering to avoid zero pivots in saddle-point problems
+        #         sub_opts["sub_pc_factor_mat_ordering_type"] = "natural"
 
-        # Obtain patches from user defined function
-        ises = self.get_patches(V)
-        # PCASM expects at least one patch, so we define an empty one on idle processes
-        if len(ises) == 0:
-            ises = [PETSc.IS().createGeneral(numpy.empty(0, dtype=IntType), comm=PETSc.COMM_SELF)]
+        #     # If an ordering type is provided, PCASM should not sort patch indices, otherwise it can.
+        #     mat_type = P.getType()
+        #     if not mat_type.endswith("sbaij"):
+        #         sentinel = object()
+        #         ordering = opts.getString("mat_ordering_type", default=sentinel)
+        #         asmpc.setASMSortIndices(ordering is sentinel)
 
-        # Create new PC object as ASM type and set index sets for patches
-        asmpc = PETSc.PC().create(comm=pc.comm)
-        asmpc.incrementTabLevel(1, parent=pc)
-        asmpc.setOptionsPrefix(self.prefix + "sub_")
-        asmpc.setOperators(*pc.getOperators())
+        #     lgmap = V.dof_dset.lgmap
+        #     # Translate to global numbers
+        #     ises = tuple(lgmap.applyIS(iset) for iset in ises)
+        #     asmpc.setASMLocalSubdomains(len(ises), ises)
+        # elif backend == "tinyasm":
+        #     _, P = asmpc.getOperators()
+        #     lgmap = V.dof_dset.lgmap
+        #     P.setLGMap(rmap=lgmap, cmap=lgmap)
 
-        opts = PETSc.Options(self.prefix)
-        backend = opts.getString("backend", default="petscasm").lower()
-        # Either use PETSc's ASM PC or use TinyASM (as simple ASM
-        # implementation designed to be fast for small block sizes).
-        if backend == "petscasm":
-            asmpc.setType(asmpc.Type.ASM)
-            # Set default solver parameters
-            asmpc.setASMType(PETSc.PC.ASMType.BASIC)
-            sub_opts = PETSc.Options(asmpc.getOptionsPrefix())
-            if "sub_pc_type" not in sub_opts:
-                sub_opts["sub_pc_type"] = "lu"
-            if "sub_pc_factor_mat_ordering_type" not in sub_opts:
-                # Preserve the natural ordering to avoid zero pivots in saddle-point problems
-                sub_opts["sub_pc_factor_mat_ordering_type"] = "natural"
+        #     asmpc.setType("tinyasm")
+        #     # TinyASM wants local numbers, no need to translate
+        #     tinyasm.SetASMLocalSubdomains(
+        #         asmpc, ises,
+        #         [W.dm.getDefaultSF() for W in V],
+        #         [W.block_size for W in V],
+        #         sum(W.block_size * W.dof_dset.total_size for W in V))
+        #     asmpc.setUp()
+        # else:
+        #     raise ValueError(f"Unknown backend type {backend}")
 
-            # If an ordering type is provided, PCASM should not sort patch indices, otherwise it can.
-            mat_type = P.getType()
-            if not mat_type.endswith("sbaij"):
-                sentinel = object()
-                ordering = opts.getString("mat_ordering_type", default=sentinel)
-                asmpc.setASMSortIndices(ordering is sentinel)
+        # asmpc.setFromOptions()
+        # self.asmpc = asmpc
 
-            lgmap = V.dof_dset.lgmap
-            # Translate to global numbers
-            ises = tuple(lgmap.applyIS(iset) for iset in ises)
-            asmpc.setASMLocalSubdomains(len(ises), ises)
-        elif backend == "tinyasm":
-            _, P = asmpc.getOperators()
-            lgmap = V.dof_dset.lgmap
-            P.setLGMap(rmap=lgmap, cmap=lgmap)
-
-            asmpc.setType("tinyasm")
-            # TinyASM wants local numbers, no need to translate
-            tinyasm.SetASMLocalSubdomains(
-                asmpc, ises,
-                [W.dm.getDefaultSF() for W in V],
-                [W.block_size for W in V],
-                sum(W.block_size * W.dof_dset.total_size for W in V))
-            asmpc.setUp()
-        else:
-            raise ValueError(f"Unknown backend type {backend}")
-
-        asmpc.setFromOptions()
-        self.asmpc = asmpc
-
-        self._patch_statistics = []
-        if opts.getBool("view_patch_sizes", default=False):
-            # Compute and stash patch statistics
-            mpi_comm = pc.comm.tompi4py()
-            max_local_patch = max(is_.getSize() for is_ in ises)
-            min_local_patch = min(is_.getSize() for is_ in ises)
-            sum_local_patch = sum(is_.getSize() for is_ in ises)
-            max_global_patch = mpi_comm.allreduce(max_local_patch, op=MPI.MAX)
-            min_global_patch = mpi_comm.allreduce(min_local_patch, op=MPI.MIN)
-            sum_global_patch = mpi_comm.allreduce(sum_local_patch, op=MPI.SUM)
-            avg_global_patch = sum_global_patch / mpi_comm.allreduce(len(ises) if sum_local_patch > 0 else 0, op=MPI.SUM)
-            msg = f"Minimum / average / maximum patch sizes : {min_global_patch} / {avg_global_patch} / {max_global_patch}\n"
-            self._patch_statistics.append(msg)
+        # self._patch_statistics = []
+        # if opts.getBool("view_patch_sizes", default=False):
+        #     # Compute and stash patch statistics
+        #     mpi_comm = pc.comm.tompi4py()
+        #     max_local_patch = max(is_.getSize() for is_ in ises)
+        #     min_local_patch = min(is_.getSize() for is_ in ises)
+        #     sum_local_patch = sum(is_.getSize() for is_ in ises)
+        #     max_global_patch = mpi_comm.allreduce(max_local_patch, op=MPI.MAX)
+        #     min_global_patch = mpi_comm.allreduce(min_local_patch, op=MPI.MIN)
+        #     sum_global_patch = mpi_comm.allreduce(sum_local_patch, op=MPI.SUM)
+        #     avg_global_patch = sum_global_patch / mpi_comm.allreduce(len(ises) if sum_local_patch > 0 else 0, op=MPI.SUM)
+        #     msg = f"Minimum / average / maximum patch sizes : {min_global_patch} / {avg_global_patch} / {max_global_patch}\n"
+        #     self._patch_statistics.append(msg)
      
     def get_patches(self, V):
+        print("GET PATCHES CALLED!")
         ''' Get the patches used for PETSc PCASM
 
         :param  V: the :class:`~.FunctionSpace`.
@@ -104,9 +102,10 @@ class CyclicReduction(PCBase):
         :returns: a list of index sets defining the ASM patches in local
             numbering (before lgmap.apply has been called).
         '''
-        pass
+        return 0
 
     def view(self, pc, viewer=None):
+        print("VIEW CALLED!")
         self.asmpc.view(viewer=viewer)
         if viewer is not None:
             for msg in self._patch_statistics:
@@ -114,22 +113,42 @@ class CyclicReduction(PCBase):
 
     def update(self, pc):
         # This is required to update an inplace ILU factorization
+        print("UPDATE CALLED!")
         if self.asmpc.getType() == "asm":
             for sub in self.asmpc.getASMSubKSP():
                 sub.getOperators()[0].setUnfactored()
 
     def apply(self, pc, x, y):
-        self.asmpc.apply(x, y)
+        _, P = pc.getOperators()
+        # Do something with P and x
+        #print("P size: ", P.getSize())
+        self.ksp = PETSc.KSP().create()
+        self.ksp.setOperators(P)
+        self.ksp.setFromOptions()
+        #print(dir(x))
+        #print(type(x))
+        #solution = Function(V)
+        #rhs = assemble(rhs_form)
+
+        # with rhs.dat.vec_ro as b:
+        #     with solution.dat.vec as x:
+        #         ksp.solve(b, x)
+        self.ksp.solve(x,y)
+        #self.pc.apply(x,y)
+        # P.mult(x,y)
+        #self.asmpc.apply(x, y)
 
     def applyTranspose(self, pc, x, y):
         self.asmpc.applyTranspose(x, y)
 
     def destroy(self, pc):
+        #print("DESTROY CALLED!")
         if hasattr(self, "asmpc"):
             self.asmpc.destroy()
+        if hasattr(self,"ksp"):
+            self.ksp.destroy()
+        
     
-
-
 #Problem parameters used if running this script
 class parameters:
     def __init__(self):
@@ -235,6 +254,9 @@ def heat(para=parameters):
 
     end = time()
 
+if __name__=="__main__":
+    print(heat(parameters()))
+
 #     iterations = solver.snes.getLinearSolveIterations()
 
 #     print('iterations', iterations)
@@ -260,5 +282,4 @@ def heat(para=parameters):
 
 
 
-if __name__=="__main__":
-    print(heat(parameters()))
+
