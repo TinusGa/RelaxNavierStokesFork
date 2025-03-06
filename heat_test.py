@@ -15,7 +15,13 @@ class CyclicReduction(PCBase):
     
     def initialize(self, pc):
         # Get context from pc
-        _, P = pc.getOperators()
+        _, A = pc.getOperators()
+        print(pc.getType())
+        self.A = A
+        #print(self.A.getOwnershipRanges())
+        #PETSc.Sys.Print("Ownership Ranges: %d" % self.A.getOwnershipRanges())
+        # if True:
+        #     raise ValueError("Stopping for simplicity")
         dm = pc.getDM()
         self.prefix = pc.getOptionsPrefix() + self._prefix
         # # Extract function space and mesh to obtain plex and indexing functions
@@ -119,21 +125,30 @@ class CyclicReduction(PCBase):
                 sub.getOperators()[0].setUnfactored()
 
     def apply(self, pc, x, y):
-        _, P = pc.getOperators()
-        # Do something with P and x
-        #print("P size: ", P.getSize())
-        self.ksp = PETSc.KSP().create()
-        self.ksp.setOperators(P)
-        self.ksp.setFromOptions()
-        #print(dir(x))
-        #print(type(x))
-        #solution = Function(V)
-        #rhs = assemble(rhs_form)
+        """
+        Should apply the preconditioner to x, storing the result in y
+        """
+        _, A = pc.getOperators() # This is a lower bidiagonal matrix 
+
+        
+
+        # PETSc.Sys.Print("Ownership Range: %s" % str(self.A.getOwnershipRange()))
+        # PETSc.Sys.Print("Ownership Range column: %s" % str(self.A.getOwnershipRangeColumn()))
+        #P.view()
+
+        # if True: 
+        #     raise ValueError("stop")
+        # self.ksp = PETSc.KSP().create()
+        # self.ksp.setOperators(P)
+        # self.ksp.setFromOptions()
+        # self.ksp.solve(x,y)
+
+        A.mult(x,y) # Computes y = A*x
 
         # with rhs.dat.vec_ro as b:
         #     with solution.dat.vec as x:
         #         ksp.solve(b, x)
-        self.ksp.solve(x,y)
+       
         #self.pc.apply(x,y)
         # P.mult(x,y)
         #self.asmpc.apply(x, y)
@@ -246,6 +261,8 @@ def heat(para=parameters):
         
     problem = NonlinearVariationalProblem(F, u)
     solver = NonlinearVariationalSolver(problem, solver_parameters=solver_parameters)
+
+    print(dir(solver))
 
     start_solve = time()
 
