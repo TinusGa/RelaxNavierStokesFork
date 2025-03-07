@@ -16,7 +16,7 @@ class CyclicReduction(PCBase):
     def initialize(self, pc):
         # Get context from pc
         _, A = pc.getOperators()
-        print(pc.getType())
+        #print(pc.getType())
         self.A = A
         #print(self.A.getOwnershipRanges())
         #PETSc.Sys.Print("Ownership Ranges: %d" % self.A.getOwnershipRanges())
@@ -132,18 +132,18 @@ class CyclicReduction(PCBase):
 
         
 
-        # PETSc.Sys.Print("Ownership Range: %s" % str(self.A.getOwnershipRange()))
+        # PETSc.Sys.Print("Ownership Ranges: %s" % str(self.A.getOwnershipRanges()))
         # PETSc.Sys.Print("Ownership Range column: %s" % str(self.A.getOwnershipRangeColumn()))
-        #P.view()
+        # P.view()
 
         # if True: 
         #     raise ValueError("stop")
-        # self.ksp = PETSc.KSP().create()
-        # self.ksp.setOperators(P)
-        # self.ksp.setFromOptions()
-        # self.ksp.solve(x,y)
+        self.ksp = PETSc.KSP().create()
+        self.ksp.setOperators(A)
+        self.ksp.setFromOptions()
+        self.ksp.solve(x,y)
 
-        A.mult(x,y) # Computes y = A*x
+        #A.mult(x,y) # Computes y = A*x
 
         # with rhs.dat.vec_ro as b:
         #     with solution.dat.vec as x:
@@ -157,7 +157,7 @@ class CyclicReduction(PCBase):
         self.asmpc.applyTranspose(x, y)
 
     def destroy(self, pc):
-        #print("DESTROY CALLED!")
+        print("DESTROY CALLED!")
         if hasattr(self, "asmpc"):
             self.asmpc.destroy()
         if hasattr(self,"ksp"):
@@ -189,8 +189,20 @@ def heat(para=parameters):
     #Define mesh
     distribution_parameters={"partition": True,
                              "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
+
+    number_of_ranks : int = COMM_WORLD.size
+    number_of_temporal_ranks : int = 2
+
+    if number_of_ranks % number_of_temporal_ranks != 0:
+            raise ValueError("Number of time slices must be exact factor of number of MPI ranks")
+
+    number_of_spatial_ranks : int = number_of_ranks // number_of_temporal_ranks
+
+    PETSc.Sys.Print('Setting up mesh across %d processes. There are %d spatial processes, each with %d temporal processes' % (number_of_ranks, number_of_spatial_ranks, number_of_temporal_ranks))
+    my_ensemble = Ensemble(COMM_WORLD, number_of_spatial_ranks)
+
     base_ = UnitSquareMesh(para.Mbase,para.Mbase,
-                           distribution_parameters=distribution_parameters)
+                           distribution_parameters=distribution_parameters, comm = my_ensemble.comm)
     spatial_mh = MeshHierarchy(base_,para.Mref)
     mh = ExtrudedMeshHierarchy(spatial_mh, para.N*para.dt,
                         base_layer = para.N,
@@ -262,7 +274,7 @@ def heat(para=parameters):
     problem = NonlinearVariationalProblem(F, u)
     solver = NonlinearVariationalSolver(problem, solver_parameters=solver_parameters)
 
-    print(dir(solver))
+    #print(dir(solver))
 
     start_solve = time()
 
@@ -271,31 +283,33 @@ def heat(para=parameters):
 
     end = time()
 
+    iterations = solver.snes.getLinearSolveIterations()
+
+    PETSc.Sys.Print("Iterations: %d" % iterations)
+    #print('iterations', iterations)
+
+    #Get number of nonzero entries
+    A, P = solver.snes.ksp.getOperators()
+    nnz = int(A.getInfo()['nz_allocated'])
+    
+    #Plot
+    # if para.plot:
+    #     ufile = File('plots/heat.pvd')
+    #     u.rename("u","u")
+    #     ufile.write(u)
+
+    #Output relevant info
+    out = {'dof': U.dim(),
+           'nnz': nnz,
+           'iterations': iterations,
+           'time_total': end-start,
+           'time_solve': end-start_solve}
+
+    return out
+
 if __name__=="__main__":
     print(heat(parameters()))
 
-#     iterations = solver.snes.getLinearSolveIterations()
-
-#     print('iterations', iterations)
-
-#     #Get number of nonzero entries
-#     A, P = solver.snes.ksp.getOperators()
-#     nnz = int(A.getInfo()['nz_allocated'])
-    
-#     #Plot
-#     if para.plot:
-#         ufile = File('plots/heat.pvd')
-#         u.rename("u","u")
-#         ufile.write(u)
-
-#     #Output relevant info
-#     out = {'dof': U.dim(),
-#            'nnz': nnz,
-#            'iterations': iterations,
-#            'time_total': end-start,
-#            'time_solve': end-start_solve}
-
-#     return out
 
 
 

@@ -119,10 +119,10 @@ def heat(para=parameters):
     nnz = int(A.getInfo()['nz_allocated'])
     
     #Plot
-    if para.plot:
-        ufile = File('plots/heat.pvd')
-        u.rename("u","u")
-        ufile.write(u)
+    # if para.plot:
+    #     ufile = File('plots/heat.pvd')
+    #     u.rename("u","u")
+    #     ufile.write(u)
 
     #Output relevant info
     out = {'dof': U.dim(),
