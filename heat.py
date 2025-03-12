@@ -113,7 +113,7 @@ def heat(para=parameters):
     iterations = solver.snes.getLinearSolveIterations()
 
     print('iterations', iterations)
-
+    print('time taken: ', end-start_solve)
     #Get number of nonzero entries
     A, P = solver.snes.ksp.getOperators()
     nnz = int(A.getInfo()['nz_allocated'])

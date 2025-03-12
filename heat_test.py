@@ -203,6 +203,7 @@ def heat(para=parameters):
 
     base_ = UnitSquareMesh(para.Mbase,para.Mbase,
                            distribution_parameters=distribution_parameters, comm = my_ensemble.comm)
+    
     spatial_mh = MeshHierarchy(base_,para.Mref)
     mh = ExtrudedMeshHierarchy(spatial_mh, para.N*para.dt,
                         base_layer = para.N,
@@ -283,9 +284,12 @@ def heat(para=parameters):
 
     end = time()
 
+    time_total = end-start_solve
+
     iterations = solver.snes.getLinearSolveIterations()
 
     PETSc.Sys.Print("Iterations: %d" % iterations)
+    PETSc.Sys.Print("Time: %d" % time_total)
     #print('iterations', iterations)
 
     #Get number of nonzero entries
