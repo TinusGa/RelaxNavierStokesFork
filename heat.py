@@ -16,7 +16,7 @@ class parameters:
         self.Mbase = 5
         self.Mref = 2
         self.degree = {'space': 1,
-                       'time': 1}
+                       'time': 0} # DG degree 0 gives backward Euler
         self.plot = True
         self.solver = None
 
@@ -66,6 +66,7 @@ def heat(para=parameters):
     F_ic = 0.5*(u-u0)*phi*ds_b
 
     F = F_space + F_time + F_ic
+    print(type(F))
 
     #Set up solver
     if para.solver=='lu':

@@ -8,7 +8,11 @@ from functools import reduce
 from operator import mul
 import contextlib
 from ufl.duals import is_primal, is_dual
+from asQ.parallel_arrays import SharedArray, OwnedArray, DistributedDataLayout1D
+from asQ.post import write_paradiag_metrics
+import time
 
+nwindows = 6
 time_partition = [2,2,2,2] # Requests 4 processors, each holding two timesteps. Spatial separation is determined by total MPI ranks
 
 def create_ensemble(time_partition, comm = COMM_WORLD):
@@ -32,46 +36,113 @@ def create_ensemble(time_partition, comm = COMM_WORLD):
     return Ensemble(comm, nspatial_domains)
 
 ensemble = create_ensemble(time_partition)
+    
+#Define mesh
+distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
+base_mesh = UnitSquareMesh(nx = 5, ny = 5, distribution_parameters=distribution_parameters, comm = ensemble.comm)
+spatial_mesh = MeshHierarchy(base_mesh, refinement_levels = 2)
 
-mesh = SquareMesh(nx=8, ny=8, L=1,
-                  comm=ensemble.comm)
-x, y = SpatialCoordinate(mesh)
+N = 20
+dt = 0.001
+mesh_hierarchy = ExtrudedMeshHierarchy(
+    base_hierarchy= spatial_mesh, 
+    height = N*dt, 
+    base_layer = N,
+    refinement_ratio = 1,
+    extrusion_type = 'uniform'
+    )
 
-V = FunctionSpace(mesh, "CG", 1)
-uinitial = Function(V)
-uinitial.project(sin(x) + cos(y))
+mesh = mesh_hierarchy[-1]
+#mesh = base_mesh
+n = FacetNormal(mesh)
 
-def form_mass(u, v):
-    return u*v*dx
+#Define function space
+degree_space = 1
+# space_element = FiniteElement("CG", triangle, degree_space)
 
-def form_function(u, v, t):
-    return inner(grad(u), grad(v))*dx
+# U = FunctionSpace(mesh,space_element)
 
-solver_parameters = {
-    'ksp_monitor': None,
-    'ksp_converged_rate': None,
-    'snes_type': 'ksponly',
-    'mat_type': 'matfree',
-    'ksp_type': 'richardson',
-    'ksp_rtol': 1e-10,
-    'pc_type': 'python',
-    'pc_python_type': 'asQ.CirculantPC',
-    'circulant_alpha': 1e-4,
-    'circulant_block': {
-        'ksp_rtol': 1e-6,
-        'ksp_type': 'gmres',
-        'pc_type': 'ilu',
-    },
+U = FunctionSpace(mesh, "CG", degree_space)
+
+#Define initial condition
+x, y, t = SpatialCoordinate(U.mesh())
+u0 = Function(U)
+u0.project(sin(pi*x)+cos(2*pi*y))
+
+def form_mass(q, phi):
+    return phi*q*dx
+
+nx = 5
+
+def form_function(q, phi, t):
+    return inner(grad(q), grad(phi))*dx - \
+           inner(phi, inner(grad(q), n))*ds - \
+           inner(q-exp(0.5*x + y + 1.25*t), \
+           inner(grad(phi), n))*ds + \
+           20*nx*inner(q-exp(0.5*x + y + 1.25*t), phi)*ds
+
+# The PETSc solver parameters used to solve the
+# blocks in step (b) of inverting the ParaDiag matrix.
+block_parameters = {
+    'ksp_type': 'preonly',
+    'pc_type': 'lu',
 }
+alpha = 0.0001
+# paradiag_parameters = {
+#     'snes_type': 'ksponly',
+#     'snes': {
+#         'monitor': None,
+#         'converged_reason': None,
+#         'rtol': 1e-10,
+#         'atol': 1e-12,
+#         'stol': 1e-12,
+#     },
+#     'mat_type': 'matfree',
+#     'ksp_type': 'preonly',
+#     'ksp': {
+#         'monitor': None,
+#         'converged_reason': None,
+#         'rtol': 1e-10,
+#         'atol': 1e-12,
+#         'stol': 1e-12,
+#     },
+#     'pc_type': 'python',
+#     'pc_python_type': 'asQ.CirculantPC',
+#     'diagfft_alpha': alpha,
+# }
 
-### Let's replicate this ###
-# paradiag = asQ.Paradiag(
-#     ensemble=ensemble, check
-#     form_mass=form_mass, check
-#     form_function=form_function, check
-#     ics=uinitial, dt=0.1, theta=0.5,
-#     time_partition=time_partition,
-#     solver_parameters=solver_parameters)
+paradiag_parameters = {'snes_type': 'ksponly',
+                             'mat_type': 'aij',
+                             'ksp_type': 'fgmres',
+                             "ksp_monitor_true_residual": None,
+                             "ksp_max_it": 100,
+                             "ksp_gmres_restart": 100,
+                             "ksp_atol": 1e-6,
+                             "ksp_rtol": 1e-6,
+                             'pc_type': 'mg',
+                             "pc_mg_type": "multiplicative",
+                             "pc_mg_cycles": "v",
+                             "mg_levels_ksp_type": "chebyshev",
+                             "mg_levels_ksp_chebyshev_esteig": "0,0.25,0,1.05",
+                             "mg_levels_ksp_max_it": 2,
+                             "mg_levels_ksp_convergence_test": "skip",
+                             "mg_levels_pc_type": "python",
+                             "mg_levels_pc_python_type": "firedrake.ASMStarPC",
+                             "mg_levels_pc_star_construct_dim": 0,
+                             "mg_levels_pc_star_sub_sub_pc_type": "lu",
+                             "mg_levels_pc_star_sub_sub_pc_factor_mat_solver_type": "umfpack",
+                             "mg_coarse_pc_type": "python",
+                             "mg_coarse_pc_python_type": "firedrake.AssembledPC",
+                             "mg_coarse_assembled_pc_type": "lu",
+                             "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
+                             }
+
+# We need to add a block solver parameters dictionary for each block.
+# Here they are all the same but they could be different.
+window_length = sum(time_partition)
+nsteps = window_length*nwindows
+for i in range(window_length):
+    paradiag_parameters['diagfft_block_'+str(i)+'_'] = block_parameters
 
 def in_range(i, length, allow_negative=True, throws=False):
     '''
@@ -213,7 +284,6 @@ class TimePartitionMixin(object):
         self.time_rank = ensemble.ensemble_comm.rank
         self.nlocal_timesteps = self.layout.local_size
         self.ntimesteps = self.layout.global_size
-
 
 def time_average(aaofunc, uout, uwrk, average='window'):
     """
@@ -411,11 +481,14 @@ class AllAtOnceForm(TimePartitionMixin):
         Constructs the (possibly nonlinear) form for the all at once system.
         Specific to the implicit theta-method (trapezium rule version).
         """
+        # PETSc.Sys.Print(type(aaofunc.initial_condition))
+        # PETSc.Sys.Print(dir(aaofunc.initial_condition))
+
         aaofunc = self.aaofunc
 
         funcs = split(aaofunc.function)
-
-        ics = split(aaofunc.initial_condition)
+        
+        ics = split(aaofunc.initial_condition) ###
         uprevs = split(aaofunc.uprev)
 
         form_mass = self.form_mass
@@ -460,7 +533,6 @@ class AllAtOnceForm(TimePartitionMixin):
             form += (1.0 - theta)*form_function(*uns, *vs, self.time[n]-dt)
 
         return form
-
 
 class AllAtOnceFunctionBase(TimePartitionMixin):
     def __init__(self, ensemble, time_partition, function_space):
@@ -916,7 +988,6 @@ class AllAtOnceFunctionBase(TimePartitionMixin):
         with self._fbuf.dat.vec_wo:
             yield self._vec
 
-
 class AllAtOnceFunction(AllAtOnceFunctionBase):
     def __init__(self, ensemble, time_partition, function_space):
         """
@@ -935,7 +1006,6 @@ class AllAtOnceFunction(AllAtOnceFunctionBase):
         super().__init__(ensemble, time_partition, function_space)
         self.function = self._fbuf
         self.initial_condition = Function(self.field_function_space)
-
 
 class AllAtOnceCofunction(AllAtOnceFunctionBase):
     def __init__(self, ensemble, time_partition, function_space):
@@ -1030,7 +1100,6 @@ class AllAtOnceCofunction(AllAtOnceFunctionBase):
                              update_ics=False)
 
 class Paradiag(TimePartitionMixin):
-    #()
     def __init__(self, ensemble,
                  time_partition,
                  form_mass, form_function,
@@ -1137,7 +1206,87 @@ class Paradiag(TimePartitionMixin):
                                             comm=self.ensemble.ensemble_comm)
         self.reset_diagnostics()
 
+    def reset_diagnostics(self):
+        """
+        Set all diagnostic information to initial values, e.g. iteration counts to zero
+        """
+        self.linear_iterations = 0
+        self.nonlinear_iterations = 0
+        self.total_timesteps = 0
+        self.total_windows = 0
+        self.block_iterations.data()[:] = 0
+        jacobian = self.solver.jacobian
+        if hasattr(jacobian, "pc") and hasattr(jacobian.pc, "block_iterations"):
+            jacobian.pc.block_iterations.data(deepcopy=False)[:] = 0
 
+    def _record_diagnostics(self):
+        """
+        Update diagnostic information from snes.
+
+        Must be called exactly once after each snes solve.
+        """
+        self.linear_iterations += self.solver.snes.getLinearSolveIterations()
+        self.nonlinear_iterations += self.solver.snes.getIterationNumber()
+        self.total_timesteps += sum(self.time_partition)
+        self.total_windows += 1
+
+    def sync_diagnostics(self):
+        """
+        Synchronise diagnostic information over all time-ranks.
+
+        Until this method is called, diagnostic information is not guaranteed to be valid.
+        """
+        jacobian = self.solver.jacobian
+        if hasattr(jacobian, "pc") and hasattr(jacobian.pc, "block_iterations"):
+            pc_block_iterations = self.solver.jacobian.pc.block_iterations
+            pc_block_iterations.synchronise()
+            self.block_iterations.data(deepcopy=False)[:] = pc_block_iterations.data(deepcopy=False)
+
+    def solve(self, nwindows=1,
+              preproc=None, postproc=None,
+              rhs=None, verbose=False):
+        """
+        Solve multiple windows of the all-at-once system.
+
+        preproc and postproc must have call signature:
+            (Paradiag, int, Any[AllAtOnceFunction, None]).
+
+        :arg nwindows: number of windows to solve for
+        :arg preproc: callback called before each window solve
+        :arg postproc: callback called after each window solve
+        """
+        def passthrough(*args, **kwargs):
+            pass
+
+        if preproc is None:
+            preproc = passthrough
+        if postproc is None:
+            postproc = passthrough
+
+        for wndw in range(nwindows):
+
+            preproc(self, wndw, rhs)
+            self.solver.solve(rhs=rhs)
+            self._record_diagnostics()
+            postproc(self, wndw, rhs)
+
+            converged_reason = self.solver.snes.getConvergedReason()
+            is_linear = self.solver.snes.getType() == 'ksponly'
+
+            if is_linear and (converged_reason == 5):
+                pass
+            elif not (1 < converged_reason < 5):
+                PETSc.Sys.Print(f'SNES diverged with error code {converged_reason}. Cancelling paradiag time integration.')
+                return
+
+            # reset window using last timestep as new initial condition
+            # but don't wipe all-at-once function at last window
+            if wndw != nwindows-1:
+                self.aaofunc.bcast_field(-1, self.aaofunc.initial_condition)
+                self.aaofunc.assign(self.aaofunc.initial_condition)
+                self.aaoform.time_update()
+                self.solver.jacobian_form.time_update()
+        self.sync_diagnostics()
 
 class AllAtOnceSolver(TimePartitionMixin):
     
@@ -1271,7 +1420,6 @@ class AllAtOnceSolver(TimePartitionMixin):
                 with rhs.global_vec_ro() as rvec:
                     self.snes.solve(rvec, gvec)
 
-
 class LinearSolver(TimePartitionMixin):
     
     def __init__(self, aaoform,
@@ -1341,14 +1489,311 @@ class LinearSolver(TimePartitionMixin):
             with self.options.inserted_options():
                 self.ksp.solve(bvec, xvec)
 
+class AllAtOnceJacobian(TimePartitionMixin):
+    """
+    PETSc options:
+
+    'aaos_jacobian_state': <'current', 'window', 'slice', 'linear', 'initial', 'reference', 'user'>
+        Which state to linearise around when constructing the Jacobian.
+        Default is 'current'.
+
+        'current': Use the current state of the AllAtOnceFunction (i.e. current Newton iterate).
+        'window': Use the time average over the entire AllAtOnceFunction at all timesteps.
+        'slice': Use the time average over timesteps on the local Ensemble member at each local timestep.
+        'linear': Do not update the state. This option should be used when the form being linearised is linear.
+        'initial': Use the initial condition at all timesteps.
+        'reference': Use a provided reference state at all timesteps.
+        'user': The state will be set manually by the user so no update is needed.
+            The `pre_jacobian_callback` argument to the AllAtOnceSolver can be used to set the state.
+    """
+    prefix = "aaos_jacobian_"
+
+    def __init__(self, aaoform,
+                 reference_state=None,
+                 options_prefix="",
+                 appctx={}):
+        """
+        Python context for a PETSc Mat for the Jacobian of an AllAtOnceForm.
+
+        :arg aaoform: The AllAtOnceForm object to linearise.
+        :arg reference_state: A firedrake.Function for a single timestep.
+            Only needed if 'aaos_jacobian_state' is 'reference'.
+        :arg options_prefix: string prefix for the Jacobian PETSc options.
+        :arg appctx: the appcontext for the Jacobian and the preconditioner.
+        """
+        self._time_partition_setup(aaoform.ensemble, aaoform.time_partition)
+        prefix = options_prefix + self.prefix
+
+        aaofunc = aaoform.aaofunc
+        self.aaoform = aaoform
+        self.aaofunc = aaofunc
+
+        self.appctx = appctx
+
+        # function the Jacobian acts on, and contribution from timestep at end of previous slice
+        self.x = aaofunc.copy()
+
+        # output residual, and contribution from timestep at end of previous slice
+        self.F = aaoform.F.copy(copy_values=False)
+        self.Fprev = Cofunction(self.F.function_space)
+
+        self.bcs = aaoform.bcs
+        self.field_bcs = aaoform.field_bcs
+
+        # working buffers for calculating time average when needed
+        self.ureduce = Function(aaofunc.field_function_space)
+        self.uwrk = Function(aaofunc.field_function_space)
+
+        # form without contributions from the previous step
+        self.form = derivative(aaoform.form, aaofunc.function)
+        self.action = action(self.form, self.x.function)
+
+        # form contributions from the previous step
+        self._useprev = aaoform.alpha is not None or self.time_rank != 0
+        if self._useprev:
+            self.form_prev = derivative(aaoform.form, aaofunc.uprev)
+            self.action_prev = action(self.form_prev, self.x.uprev)
+        else:
+            self.form_prev = None
+            self.action_prev = None
+
+        # option for what state to linearise around
+        valid_jacobian_states = tuple(('current', 'window', 'slice', 'linear',
+                                       'initial', 'reference', 'user'))
+
+        if (prefix != "") and (not prefix.endswith("_")):
+            prefix += "_"
+
+        self.jacobian_state = get_option_from_list(
+            prefix, "state", valid_jacobian_states, default_index=0)
+
+        if reference_state is not None:
+            self.reference_state = Function(aaofunc.field_function_space)
+            self.reference_state.assign(reference_state)
+        else:
+            self.reference_state = None
+
+        if self.jacobian_state == 'reference' and self.reference_state is None:
+            raise ValueError("AllAtOnceJacobian must be provided a reference state to use \'reference\' for aaos_jacobian_state.")
+
+        self.update()
+
+    def update(self, X=None):
+        """
+        Update the state to linearise around according to aaos_jacobian_state.
+
+        :arg X: an optional AllAtOnceFunction or global PETSc Vec.
+            If X is not None then the state is updated from X.
+        """
+
+        aaofunc = self.aaofunc
+        jacobian_state = self.jacobian_state
+
+        if jacobian_state in ('linear', 'user'):
+            return
+
+        if X is not None:
+            self.aaofunc.assign(X)
+
+        if jacobian_state == 'current':
+            return
+
+        elif jacobian_state in ('window', 'slice'):
+            time_average(self.aaofunc, self.ureduce, self.uwrk,
+                         average=jacobian_state)
+            aaofunc.assign(self.ureduce)
+
+        elif jacobian_state == 'initial':
+            aaofunc.assign(self.aaofunc.initial_condition)
+
+        elif jacobian_state == 'reference':
+            aaofunc.assign(self.reference_state)
+
+        return
+
+    def mult(self, mat, X, Y):
+        """
+        Apply the action of the matrix to a PETSc Vec.
+
+        :arg X: a PETSc Vec to apply the action on.
+        :arg Y: a PETSc Vec for the result.
+        """
+        # we could use nonblocking here and overlap comms with assembling form
+        self.x.assign(X, update_halos=True, blocking=True)
+
+        # We use the same strategy as the implicit matrix context in firedrake
+        # for dealing with the boundary nodes. From the comments in that file:
+
+        # The matrix has an identity block corresponding to the Dirichlet
+        # boundary conditions.
+        # Our algorithm in this case is to save the BC values, zero them
+        # out before computing the action so that they don't pollute
+        # anything, and then set the values into the result.
+        # This has the effect of applying [ A_ii 0 ; 0 A_bb ] where A_ii
+        # is the block corresponding only to (non-fixed) internal dofs
+        # and A_bb=I is the identity block on the (fixed) boundary dofs.
+
+        # Zero the boundary nodes on the input so that A_ib = A_01 = 0
+        for bc in self.bcs:
+            bc.zero(self.x.function)
+
+        # assembly stage
+        assemble(self.action, bcs=self.bcs,
+                    tensor=self.F.cofunction)
+
+        if self._useprev:
+            # repeat for the halo part of the matrix action
+            for bc in self.field_bcs:
+                bc.zero(self.x.uprev)
+            assemble(self.action_prev, bcs=self.bcs,
+                        tensor=self.Fprev)
+            self.F.cofunction += self.Fprev
+
+        if len(self.bcs) > 0:
+            Fbuf = self.Fprev  # just using Fprev as a working buffer
+            # Get the original values again
+            with Fbuf.dat.vec_wo as fvec:
+                X.copy(fvec)
+            # Set the output boundary nodes to the input boundary nodes.
+            # This is equivalent to setting [A_bi, A_bb] = [0 I]
+            for bc in self.bcs:
+                bc.set(self.F.cofunction, Fbuf)
+
+        with self.F.global_vec_ro() as v:
+            v.copy(Y)
+
+    def petsc_mat(self):
+        """
+        Return a petsc4py.PETSc.Mat with this AllAtOnceJacobian as the python context.
+        """
+        mat = PETSc.Mat().create(comm=self.ensemble.global_comm)
+        mat.setType("python")
+        sizes = (self.aaofunc.nlocal_dofs, self.aaofunc.nglobal_dofs)
+        mat.setSizes((sizes, sizes))
+        mat.setPythonContext(self)
+        mat.setUp()
+        return mat
+
+from warnings import warn
+
+def get_option_from_list(prefix, option_name, option_list,
+                         default_index=None, deprecated_prefix=None):
+    """
+    Get a string option from the global PETSc.Options and check it is one of a valid list.
+
+    :arg option_name: the name of the PETSc option.
+    :arg option_list: an iterable with all valid values for the option.
+    :arg default_index: the index of the default option in the option_list.
+        if None then no default used.
+    """
+    default = None if default_index is None else option_list[default_index]
+    if deprecated_prefix is not None:
+        option = get_deprecated_option(PETSc.Options().getString,
+                                       prefix, deprecated_prefix,
+                                       option_name, default)
+    else:
+        option = PETSc.Options().getString(prefix+option_name,
+                                           default=default)
+    if option not in option_list:
+        msg = f"{option} must be one of "+" or ".join(option_list)
+        raise ValueError(msg)
+    return option
+
+def get_deprecated_option(getOption, prefix, deprecated_prefix,
+                          option_name, default=None):
+    deprecated_name = deprecated_prefix + option_name
+    option_name = prefix + option_name
+
+    deprecated_option = getOption(deprecated_name,
+                                  default=default)
+    option = getOption(option_name,
+                       default=default)
+
+    if deprecated_option != default:
+        msg = f"Prefix {deprecated_prefix} is deprecated and will be removed in the future. Use {prefix} instead."
+        warn(msg)
+        if option != default:
+            msg = f"{deprecated_name} ignored in favour of {option_name}"
+            warn(msg)
+        else:
+            option = deprecated_option
+
+    return option
+
 paradiag = Paradiag(
     ensemble=ensemble, 
     form_mass=form_mass, 
     form_function=form_function, 
-    ics=uinitial, dt=0.1, theta=0.5,
+    ics=u0, dt=dt, theta=1,
     time_partition=time_partition,
-    solver_parameters=solver_parameters)
+    solver_parameters=paradiag_parameters)
 
-paradiag.solve(nwindows=1)
+def window_preproc(pdg, wndw, rhs):
+    PETSc.Sys.Print('')
+    PETSc.Sys.Print(f'### === --- Calculating time-window {wndw} --- === ###')
+    PETSc.Sys.Print('')
+
+# We find the L2-error at each timestep
+q_exact = Function(U)
+errors = SharedArray(time_partition, comm=ensemble.ensemble_comm)
+times = SharedArray(time_partition, comm=ensemble.ensemble_comm)
+
+def window_postproc(pdg, wndw, rhs):
+    total_dof = 0
+    for step in range(pdg.aaofunc.ntimesteps):
+        if pdg.aaoform.layout.is_local(step):
+            local_step = pdg.aaofunc.transform_index(step, from_range='window')
+            t = pdg.aaoform.time[local_step]
+            q_exact.interpolate(exp(.5*x + y + 1.25*t))
+            total_dof += q_exact.dof_dset.size
+            qp = pdg.aaofunc[local_step]
+            errors.dlocal[local_step] = errornorm(qp, q_exact)
+            times.dlocal[local_step] = t
+    PETSc.Sys.Print(f"Total dof? : {total_dof}")
+
+    errors.synchronise()
+    times.synchronise()
+
+    for step in range(pdg.aaofunc.ntimesteps):
+        PETSc.Sys.Print(f"Time={str(times.dglobal[step]).ljust(8, ' ')}, qerr={errors.dglobal[step]}")
+
+
+# Solve nwindows of the all-at-once system
+start = time.time()
+paradiag.solve(nwindows,
+          preproc=window_preproc,
+          postproc=window_postproc)
+
+total_time = time.time() - start
+
+
+# # # === --- Postprocessing --- === # # #
+
+# paradiag collects a few solver diagnostics for us to inspect
+nw = nwindows
+
+# Number of nonlinear iterations, total and per window.
+# (1 for fgmres and # picard iterations for preonly)
+PETSc.Sys.Print(f'nonlinear iterations: {paradiag.nonlinear_iterations}  |  iterations per window: {paradiag.nonlinear_iterations/nw}')
+
+# Number of linear iterations, total and per window.
+# (# of gmres iterations for fgmres and # picard iterations for preonly)
+PETSc.Sys.Print(f'linear iterations: {paradiag.linear_iterations}  |  iterations per window: {paradiag.linear_iterations/nw}')
+
+# Number of iterations needed for each block in step-(b), total and per block solve
+# The number of iterations for each block will usually be different because of the different eigenvalues
+PETSc.Sys.Print(f'block linear iterations: {paradiag.block_iterations._data}  |  iterations per block solve: {paradiag.block_iterations._data/paradiag.linear_iterations}')
+
+PETSc.Sys.Print(f"U dof: {U.dim()}")
+PETSc.Sys.Print(f"Prd aoofunc ntimesteps: {paradiag.aaofunc.ntimesteps}")
+PETSc.Sys.Print(f"U*time_steps (this is the work from one window!): {U.dim()*paradiag.aaofunc.ntimesteps}")
+PETSc.Sys.Print(f"Time partition: {time_partition}")
+PETSc.Sys.Print(f"nsteps: {nsteps}")
+PETSc.Sys.Print(f"U dof total: {nsteps*U.dim()}")
+
+PETSc.Sys.Print(f"Total time: {total_time}")
+# We can write these diagnostics to file, along with some other useful information.
+# Files written are: aaos_metrics.txt, block_metrics.txt, paradiag_setup.txt, solver_parameters.txt
+write_paradiag_metrics(paradiag)
 
 

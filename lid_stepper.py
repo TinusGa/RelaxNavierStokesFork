@@ -14,14 +14,14 @@ Print = PETSc.Sys.Print
 
 class parameters:
     def __init__(self):
-        self.N = 20
+        self.N = 5
         self.dt = 0.001 #Specified instead of end time
         self.Mbase = 10
         self.Mref = 3
         self.degree = {'space': 2}
         self.R = Constant(100) #Reynolds number
         self.alpha = Constant(1) #Diffusion constant
-        self.plot = True
+        self.plot = False
         self.solver = 'one_step'
     
 
@@ -32,14 +32,39 @@ def lid(para=parameters):
     def plus(v):
         return -0.5*jump(v,n[2]) + avg(v)
     
+    number_of_ranks : int = COMM_WORLD.size
+    number_of_temporal_ranks : int = 2
+
+    if number_of_ranks % number_of_temporal_ranks != 0:
+            raise ValueError("Number of time slices must be exact factor of number of MPI ranks")
+
+    number_of_spatial_ranks : int = number_of_ranks // number_of_temporal_ranks
+
+    PETSc.Sys.Print('Setting up mesh across %d processes. There are %d spatial processes, each with %d temporal processes' % (number_of_ranks, number_of_spatial_ranks, number_of_temporal_ranks))
+    my_ensemble = Ensemble(COMM_WORLD, number_of_spatial_ranks)
+    
     #Define mesh
     distribution_parameters={"partition": True,
                              "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
+    
     base_ = UnitSquareMesh(para.Mbase,para.Mbase,
-                           distribution_parameters=distribution_parameters)
+                           distribution_parameters=distribution_parameters, comm=my_ensemble.comm)
+
+    # base_ = UnitSquareMesh(para.Mbase,para.Mbase,
+    #                         distribution_parameters=distribution_parameters)
+
+    PETSc.Sys.Print(f"Ensemble comm rank: {my_ensemble.ensemble_comm.rank}")
+    PETSc.Sys.Print(f"Comm name: {my_ensemble.comm.name}") # Spatial comm
+    PETSc.Sys.Print(f"Comm size: {my_ensemble.comm.size}") # Spatial comm
+    PETSc.Sys.Print(f"Ensemble comm ranme: {my_ensemble.ensemble_comm.name}") # Should be temporal comm
+
     spatial_mh = MeshHierarchy(base_,para.Mref)
 
     mesh = spatial_mh[-1]
+
+    PETSc.Sys.Print('  rank %d owns %d elements and can access %d vertices' \
+                % (mesh.comm.rank, mesh.num_cells(), mesh.num_vertices()),
+                comm=my_ensemble.global_comm)
 
     n = FacetNormal(mesh)
     
@@ -195,9 +220,15 @@ def lid(para=parameters):
     start_solve = time()
     while t<para.N * para.dt:
         #Solve
+        #A,_ = solver.snes.ksp.getOperators()
+        # print(A.getInfo())
+        # print(A.getSize())
+        # print(A.getSizes())
+        # print(type(A))
         solver.solve()
         z0.assign(z)
         t += para.dt
+        
 
         #Save iteration counts
         iterations.append(solver.snes.getLinearSolveIterations())
@@ -213,8 +244,8 @@ def lid(para=parameters):
 
     print('iterations', iterations)
     print(np.mean(iterations))
-    print('nl iterations', nl_iterations)
-    print(np.mean(nl_iterations))
+    #print('nl iterations', nl_iterations)
+    #print(np.mean(nl_iterations))
     
         
     #Output relevant info
@@ -231,23 +262,26 @@ def lid(para=parameters):
 
 
 def order_points(mesh_dm, points, ordering_type, prefix):
-    '''Order a the points (topological entities) of a patch based                                                        on the adjacency graph of the mesh.                                                                               
-    :arg mesh_dm: the `mesh.topology_dm`                                                                                 :arg points: array with point indices forming the patch                                                              :arg ordering_type: a `PETSc.Mat.OrderingType`                                                                       :arg prefix: the prefix associated with additional ordering options                                              
+    '''Order a the points (topological entities) of a patch based                                                        
+    on the adjacency graph of the mesh.                                                                               
+    :arg mesh_dm: the `mesh.topology_dm`                                                                                 
+    :arg points: array with point indices forming the patch                                                              
+    :arg ordering_type: a `PETSc.Mat.OrderingType`                                                                       
+    :arg prefix: the prefix associated with additional ordering options                                              
 
     :returns: the permuted array of points                                                                            
     '''
     if ordering_type == "natural":
         return points
-    subgraph = [numpy.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
-    ia = numpy.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
-    ja = numpy.concatenate(subgraph).astype(PETSc.IntType)
-    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, numpy.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
+    subgraph = [np.numpy.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
+    ia = np.numpy.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
+    ja = np.numpy.concatenate(subgraph).astype(PETSc.IntType)
+    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, np.numpy.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
+    #A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, np.numpy.ones(ja.shape, PETSc.RealType)), comm = Ensemble(COMM_WORLD, 4).comm)
     A.setOptionsPrefix(prefix)
     rperm, _ = A.getOrdering(ordering_type)
     A.destroy()
     return points[rperm.getIndices()]
-
-
 
 class ASMVankaStarPC(ASMPatchPC):
     '''Patch-based PC using closure of star of mesh entities implemented as an
@@ -324,9 +358,6 @@ class ASMVankaStarPC(ASMPatchPC):
             ises.append(iset)
 
         return ises
-
-
-
 
 
 if __name__=="__main__":
