@@ -4,42 +4,39 @@ from asQ import (
     create_ensemble,
     AllAtOnceFunction,
     AllAtOnceForm,
-    AllAtOnceSolver
+    AllAtOnceSolver,
 )
 
 time_partition = [2, 2, 2, 2]
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
-############################################################
-# mesh = SquareMesh(nx=32, ny=32, L=1, comm=ensemble.comm)
 
-# x, y = SpatialCoordinate(mesh)
-# V = FunctionSpace(mesh, "CG", 1)
-
-# u0 = Function(V)
-# u0.interpolate(sin(0.25*pi*x)*cos(2*pi*y))
-############################################################
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
 base_mesh = UnitSquareMesh(nx = 5, ny = 5, distribution_parameters=distribution_parameters, comm = ensemble.comm)
-spatial_mesh = MeshHierarchy(base_mesh, refinement_levels = 2)
+spatial_mesh = MeshHierarchy(base_mesh, refinement_levels = 3)
 
 N = 20
 dt = 0.001
-mesh_hierarchy = ExtrudedMeshHierarchy(
-    base_hierarchy= spatial_mesh, 
-    height = N*dt, 
-    base_layer = N,
-    refinement_ratio = 1,
-    extrusion_type = 'uniform'
-    )
 
-mesh = mesh_hierarchy[-1]
+# Extruded mesh hierarchy not compatible with asQ methods. Needs work. 
+
+# mesh_hierarchy = ExtrudedMeshHierarchy(
+#     base_hierarchy= spatial_mesh, 
+#     height = N*dt, 
+#     base_layer = N,
+#     refinement_ratio = 1,
+#     extrusion_type = 'uniform'
+#     )
+
+#mesh = mesh_hierarchy[-1]
+
+mesh = spatial_mesh[-1]
 n = FacetNormal(mesh)
 
 degree_space = 1
 V = FunctionSpace(mesh, "CG", degree_space)
 
-x, y, t = SpatialCoordinate(V.mesh())
+x, y = SpatialCoordinate(V.mesh())
 u0 = Function(V)
 u0.project(sin(pi*x)+cos(2*pi*y))
 ################################################
@@ -65,6 +62,7 @@ aaoform = AllAtOnceForm(aaofunc,
                         form_function, 
                         bcs=bcs)
 
+# asQ solver parameters
 solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'matfree',
@@ -73,11 +71,14 @@ solver_parameters = {
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
-    'pc_python_type': 'asQ.CirculantPC',
-    'circulant_block': {'pc_type': 'lu'},
-    'circulant_alpha': 1e-4
+    'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
+    #'circulant_block': {'pc_type': 'lu'},
+    #'circulant_alpha': 1e-4
 }
 
+# Solver Parameters for heat equation from RelaxNavierStokes code.
+# Want to transition from above parameters to the ones below.
+ 
 # solver_parameters = {'snes_type': 'ksponly',
 #                     'mat_type': 'aij',
 #                     'ksp_type': 'fgmres',
@@ -109,7 +110,16 @@ aaosolver = AllAtOnceSolver(aaoform,
                             solver_parameters)
 
 aaofunc.assign(u0)
-for i in range(6):
+
+A,_ = aaosolver.snes.ksp.getOperators()
+
+PETSc.Sys.Print(f"Size A: {A.getSize(),A.getSizes()}")
+PETSc.Sys.Print(f"Ownership ranges: {A.getOwnershipRanges()}")
+PETSc.Sys.Print(f"View: {A.view()}")
+
+# Solves over windows. Each window is solved using space-time parallelism. 
+# Doing the loop over a single step should solve the entire system all-at-once.
+for i in range(1):
     aaosolver.solve()
     aaofunc.bcast_field(-1, aaofunc.initial_condition)
     aaofunc.assign(aaofunc.initial_condition)
