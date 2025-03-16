@@ -7,6 +7,9 @@ from asQ import (
     AllAtOnceSolver,
 )
 
+import warnings
+warnings.simplefilter("ignore", FutureWarning)
+
 time_partition = [2, 2, 2, 2]
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
@@ -72,8 +75,8 @@ solver_parameters = {
     'ksp_converged_rate': None,
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
-    #'circulant_block': {'pc_type': 'lu'},
-    #'circulant_alpha': 1e-4
+    'circulant_block': {'pc_type': 'lu'},
+    'circulant_alpha': 1e-4
 }
 
 # Solver Parameters for heat equation from RelaxNavierStokes code.

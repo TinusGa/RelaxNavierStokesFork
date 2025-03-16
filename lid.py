@@ -154,7 +154,7 @@ def lid(para=parameters):
                              "mg_levels_pc_type": "python",
                              "mg_levels_pc_python_type": __name__ + ".ASMVankaStarPC",
                              "mg_levels_pc_vankastar_construct_dim": 0,
-                             "mg_levels_pc_vankastar_exclude_subspaces": "1",
+                             "mg_levels_pc_vankastar_exclude_subfunctions": "1",
                              "mg_levels_pc_vankastar_sub_sub_pc_type": "lu",
                              "mg_levels_pc_vankastar_sub_sub_pc_factor_mat_solver_type": "umfpack",
                              "mg_coarse_pc_type": "python",
@@ -183,7 +183,7 @@ def lid(para=parameters):
                              "mg_levels_pc_type": "python",
                              "mg_levels_pc_python_type": __name__ + ".ASMVankaStarPC",
                              "mg_levels_pc_vankastar_construct_dim": 0,
-                             "mg_levels_pc_vankastar_exclude_subspaces": "1",
+                             "mg_levels_pc_vankastar_exclude_subfunctions": "1",
                              "mg_levels_pc_vankastar_sub_sub_pc_type": "lu",
                              "mg_levels_pc_vankastar_sub_sub_pc_factor_mat_solver_type": "umfpack",
                              "mg_coarse_pc_type": "python",
@@ -268,7 +268,7 @@ class ASMVankaStarPC(ASMPatchPC):
     consists of all DoFs on the closure of the star of the mesh entity
     specified by `pc_vanka_construct_dim` (or codim).
 
-    This version includes the star of the "exclude_subspaces" in the patch
+    This version includes the star of the "exclude_subfunctions" in the patch
     '''
 
     _prefix = "pc_vankastar_"
@@ -285,7 +285,7 @@ class ASMVankaStarPC(ASMPatchPC):
         if (depth == -1 and height == -1) or (depth != -1 and height != -1):
             raise ValueError(f"Must set exactly one of {self.prefix}construct_dim or {self.prefix}construct_codim")
 
-        exclude_subspaces = [int(subspace) for subspace in PETSc.Options().getString(self.prefix+"exclude_subspaces", default="-1").split(",")]
+        exclude_subfunctions = [int(subspace) for subspace in PETSc.Options().getString(self.prefix+"exclude_subfunctions", default="-1").split(",")]
         ordering = PETSc.Options().getString(self.prefix+"mat_ordering_type", default="natural")
         # Accessing .indices causes the allocation of a global array,
         # so we need to cache these for efficiency
@@ -319,7 +319,7 @@ class ASMVankaStarPC(ASMPatchPC):
             indices = []
             for (i, W) in enumerate(V):
                 section = W.dm.getDefaultSection()
-                if i in exclude_subspaces:
+                if i in exclude_subfunctions:
                     loop_list = pt_array_star
                 else:
                     loop_list = pt_array_vanka
