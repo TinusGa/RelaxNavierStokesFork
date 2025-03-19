@@ -10,7 +10,7 @@ from asQ import (
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-time_partition = [2, 2, 2, 2]
+time_partition = [64, 64, 64, 64]
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
@@ -68,7 +68,7 @@ aaoform = AllAtOnceForm(aaofunc,
 # asQ solver parameters
 solver_parameters = {
     'snes_type': 'ksponly',
-    'mat_type': 'matfree',
+    #'mat_type': 'matfree',
     'ksp_type': 'richardson',
     'ksp_rtol': 1e-12,
     'ksp_monitor': None,

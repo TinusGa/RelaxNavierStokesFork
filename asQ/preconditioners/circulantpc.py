@@ -101,26 +101,26 @@ class CirculantPC(AllAtOnceBlockPCBase):
         appctx = self.appctx
 
         # basic model function space
-        self.blockV = aaofunc.field_function_space
+        self.blockV = aaofunc.field_function_space 
 
         # Input/Output wrapper Functions for all-at-once residual being acted on
-        self.yf = fd.Function(aaofunc.function_space)  # output
+        self.yf = fd.Function(aaofunc.function_space)  
 
         self.alpha = get_deprecated_option(
             PETSc.Options().getReal, prefix, self.deprecated_prefix,
             "alpha", default=self.default_alpha)
 
-        dt = self.dt
-        self.t_average = fd.Constant(self.aaoform.t0 + (self.aaofunc.ntimesteps + 1)*self.dt/2)
+        dt = self.dt 
+        self.t_average = fd.Constant(self.aaoform.t0 + (self.aaofunc.ntimesteps + 1)*self.dt/2) # t^{hat}
         theta = self.theta
         alpha = self.alpha
         nt = self.ntimesteps
 
         # Gamma coefficients
         exponents = np.arange(nt)/nt
-        self.Gam = alpha**exponents
+        self.Gam = alpha**exponents 
 
-        slice_begin = aaofunc.transform_index(0, from_range='slice', to_range='window')
+        slice_begin = aaofunc.transform_index(0, from_range='slice', to_range='window') # 
         slice_end = slice_begin + self.nlocal_timesteps
         self.Gam_slice = self.Gam[slice_begin:slice_end]
 
@@ -131,8 +131,12 @@ class CirculantPC(AllAtOnceBlockPCBase):
         C1col[:2] = np.array([1, -1])/dt
         C2col[:2] = np.array([theta, 1-theta])
 
+        
+
         self.D1 = np.sqrt(nt)*fft(self.Gam*C1col)
         self.D2 = np.sqrt(nt)*fft(self.Gam*C2col)
+
+        
 
         # Block system setup
         # First need to build the complex function space version of blockV

@@ -17,6 +17,96 @@ from functools import partial
 __all__ = ['CyclicReductionPC']
 
 class CyclicReductionPC(AllAtOnceBlockPCBase):
+
+    prefix = 'cyclic_reduction_'
+    valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
+    default_theta = 1 # Backward Euler
+
+    @profiler()
+    def initialize(self,pc):
+        # Initialize is called once per MPI processors
+        super().initialize(pc, final_initialize=False)
+
+        # these were setup by super
+        prefix = self.full_prefix
+        aaofunc = self.aaofunc
+        appctx = self.appctx
+        nt = self.ntimesteps # N_t
+        self.blockV = aaofunc.field_function_space 
+
+        _,A = pc.getOperators() # Global matrix. Treat as though we have a slice of A for the current proc. Each proc has it's own ownership of A
+         #print(self.A.getOwnershipRange())
+
+        self.block_sol = fd.Function(self.blockV) # u^n ??
+        self.block_rhs = fd.Cofunction(self.blockV.dual()) # b^n ??
+        L = self.block_rhs
+        u = self.block_sol
+        self.bcs = self.aaoform.field_bcs
+        #A = self.aaoform.form # I think this is good!
+
+        # Input/Output wrapper Functions for all-at-once residual being acted on
+        self.yf = fd.Function(aaofunc.function_space)  # output. So this is b^{tilde} ?? I.e. Au = b^{tilde}. No clue why it is here.
+
+       
+        # MIGHT HAVE TO USE LINEARVARIATIONAL IF KSP DOESN'T WORK
+        # A: bilinear form, L: linear form, u: the .Function to which the solution will be assigned
+        # block_problem = fd.LinearVariationalProblem(A, L, u,
+        #                                                 bcs=self.bcs,
+        #                                                 constant_jacobian=True)
+
+        # self.block_solver = fd.LinearVariationalSolver(
+        #     block_problem, appctx=appctx_h,
+        #     options_prefix=default_block_prefix+str(ii),
+        #     solver_parameters=default_block_options)
+
+
+        # KSP SOLVE
+        # Convert the matrix to AIJ (supported format)
+        # PETSc.Sys.Print(f"Converting mat")
+        # self.A = A.convert(PETSc.Mat.Type.AIJ)
+        # PETSc.Sys.Print(f"Finished converting mat")
+        #self.A = A
+
+        PETSc.Sys.Print(f"Type A {type(A)}")
+        #PETSc.Sys.Print(f"Dir A {dir(A)}")
+        PETSc.Sys.Print(f"Python Context A {A.getPythonContext()}")
+        #PETSc.Sys.Print(f"INFO:::: A {A.getInfo()}")
+        self.A = PETSc.Mat().createAIJ(size=A.getSize(), comm=A.getComm())  # Create new AIJ matrix
+        #A.copy(self.A)
+        
+
+        # Create solver context
+        self.ksp = PETSc.KSP().create()
+        self.ksp.setOperators(self.A)
+
+        # Use a direct LU solver
+        self.ksp.setType(PETSc.KSP.Type.PREONLY)
+        pc = self.ksp.getPC()
+        pc.setType(PETSc.PC.Type.LU)
+        pc.setFactorSolverType("mumps")
+
+        # Set up solver
+        self.ksp.setUp()
+     
+        self.initialized = True
+
+    
+    @profiler()
+    def _record_diagnostics(self):
+        pass
+
+    @profiler()
+    def update(self, pc):
+        pass
+
+    @profiler()
+    def apply_impl(self, pc, x, y):
+        # Get PETSc vectors
+        #self.block_solver.solve()
+        with x.global_vec_ro() as xvec, y.global_vec_wo() as yvec:
+            self.ksp.solve(xvec, yvec)
+
+class CyclicReductionPC1(AllAtOnceBlockPCBase):
    
     prefix = "circulant_"
     deprecated_prefix = "diagfft_"
@@ -26,6 +116,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def initialize(self, pc):
+        # Initialize is called once per MPI processors
         super().initialize(pc, final_initialize=False)
 
         # these were setup by super
@@ -34,26 +125,25 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         appctx = self.appctx
 
         # basic model function space
-        self.blockV = aaofunc.field_function_space
-        PETSc.Sys.Print(f"dir,type blockV: {type(self.blockV)}")
+        self.blockV = aaofunc.field_function_space # What is block V? Is it V s.t. C_j = V D_j V^{-1} ??
 
         # Input/Output wrapper Functions for all-at-once residual being acted on
-        self.yf = fd.Function(aaofunc.function_space)  # output
+        self.yf = fd.Function(aaofunc.function_space)  # output. So this is b^{tilde} ?? I.e. Au = b^{tilde}
         PETSc.Sys.Print(f"self.yf : {type(self.yf)}")
 
         self.alpha = get_deprecated_option(
             PETSc.Options().getReal, prefix, self.deprecated_prefix,
             "alpha", default=self.default_alpha)
 
-        dt = self.dt
+        dt = self.dt # ∆t
         self.t_average = fd.Constant(self.aaoform.t0 + (self.aaofunc.ntimesteps + 1)*self.dt/2)
         theta = self.theta
         alpha = self.alpha
-        nt = self.ntimesteps
+        nt = self.ntimesteps # N_t
 
         # Gamma coefficients
         exponents = np.arange(nt)/nt
-        self.Gam = alpha**exponents
+        self.Gam = alpha**exponents # Gamma = diag( alpha^{n-1}/N_t )
 
         slice_begin = aaofunc.transform_index(0, from_range='slice', to_range='window')
         slice_end = slice_begin + self.nlocal_timesteps
@@ -66,8 +156,13 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         C1col[:2] = np.array([1, -1])/dt
         C2col[:2] = np.array([theta, 1-theta])
 
+        # Build C_1 and C_2 used in C_j = V D_j V^{-1}. 
+        # These are just constructed for the first column, i.e., C1col = [1/dt, -1/dt, 0, ... , 0]^T.
+
         self.D1 = np.sqrt(nt)*fft(self.Gam*C1col)
         self.D2 = np.sqrt(nt)*fft(self.Gam*C2col)
+
+        # D_j = diag( Gamma * Fourier * c_j ), where c_j is the first column of C_j
 
         # Block system setup
         # First need to build the complex function space version of blockV
@@ -100,6 +195,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # input and output functions to the block solve
         self.block_sol = fd.Function(self.CblockV)
         self.block_rhs = fd.Cofunction(self.CblockV.dual())
+
         # input for the cofunc rhs map
         self.xtemp = fd.Function(self.CblockV)
 
@@ -160,9 +256,10 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 default_block_prefix = deprecated_block_prefix
 
         default_block_options = get_default_options(
-            default_block_prefix, range(self.ntimesteps))
-
-        # building the block problem solvers
+            default_block_prefix, range(self.ntimesteps)) # {'pc_type': 'lu'}
+        
+        
+        # building the block problem solvers. This yields a 2x2 system i think!
         for i in range(self.nlocal_timesteps):
             ii = aaofunc.transform_index(i, from_range='slice', to_range='window')
             d1 = self.D1[ii]
@@ -172,6 +269,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             K, D2r, D2i = cpx.derivative(d2, form_function, self.u0, return_z=True)
 
             A = M + K
+
+            PETSc.Sys.Print(f"Type A: {type(A)}")
 
             # The rhs
             L = self.block_rhs
@@ -187,6 +286,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 "form_mass": self.form_mass,
                 "form_function": self.form_function,
             }
+
             appctx_h.update(block_appctx)
 
             block_problem = fd.LinearVariationalProblem(A, L, self.block_sol,
@@ -296,6 +396,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # Do the block solves
 
         with PETSc.Log.Event("CyclicReduction.CyclicReductionPC.apply.block_solves"):
+            PETSc.Sys.Print(f"nlocal_timesteps: {self.nlocal_timesteps}")
             for i in range(self.nlocal_timesteps):
                 # copy the data into solver input
                 cpx.set_real(self.xtemp, self.xfr[i])
