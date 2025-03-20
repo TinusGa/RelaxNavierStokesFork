@@ -12,6 +12,8 @@ from asQ.common import get_option_from_list, get_deprecated_option
 from asQ.allatonce.function import time_average as time_average_function
 from asQ.preconditioners.base import AllAtOnceBlockPCBase, get_default_options
 
+from asQ.parallel_arrays import SharedArray
+
 from functools import partial
 
 __all__ = ['CyclicReductionPC']
@@ -27,67 +29,122 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # Initialize is called once per MPI processors
         super().initialize(pc, final_initialize=False)
 
-        # these were setup by super
-        prefix = self.full_prefix
         aaofunc = self.aaofunc
-        appctx = self.appctx
-        nt = self.ntimesteps # N_t
-        self.blockV = aaofunc.field_function_space 
 
-        _,A = pc.getOperators() # Global matrix. Treat as though we have a slice of A for the current proc. Each proc has it's own ownership of A
-         #print(self.A.getOwnershipRange())
+        # all-at-once reference state
+        self.state_func = aaofunc.copy()
 
-        self.block_sol = fd.Function(self.blockV) # u^n ??
-        self.block_rhs = fd.Cofunction(self.blockV.dual()) # b^n ??
-        L = self.block_rhs
-        u = self.block_sol
-        self.bcs = self.aaoform.field_bcs
-        #A = self.aaoform.form # I think this is good!
+        # single timestep function space
+        field_function_space = aaofunc.field_function_space
 
-        # Input/Output wrapper Functions for all-at-once residual being acted on
-        self.yf = fd.Function(aaofunc.function_space)  # output. So this is b^{tilde} ?? I.e. Au = b^{tilde}. No clue why it is here.
+        # Building the nonlinear operator
+        self.block_solvers = []
 
-       
-        # MIGHT HAVE TO USE LINEARVARIATIONAL IF KSP DOESN'T WORK
-        # A: bilinear form, L: linear form, u: the .Function to which the solution will be assigned
-        # block_problem = fd.LinearVariationalProblem(A, L, u,
-        #                                                 bcs=self.bcs,
-        #                                                 constant_jacobian=True)
+        # zero out bc dofs
+        self.block_bcs = tuple(
+            fd.DirichletBC(field_function_space,
+                           0*bc.function_arg,
+                           bc.sub_domain)
+            for bc in self.aaoform.field_bcs)
 
-        # self.block_solver = fd.LinearVariationalSolver(
-        #     block_problem, appctx=appctx_h,
-        #     options_prefix=default_block_prefix+str(ii),
-        #     solver_parameters=default_block_options)
+        # user appctx for the blocks
+        block_appctx = self.appctx.get('block_appctx', {})
 
+        dt1 = fd.Constant(1/self.dt)
+        tht = fd.Constant(self.theta)
+        tht = fd.Constant(1)
 
-        # KSP SOLVE
-        # Convert the matrix to AIJ (supported format)
-        # PETSc.Sys.Print(f"Converting mat")
-        # self.A = A.convert(PETSc.Mat.Type.AIJ)
-        # PETSc.Sys.Print(f"Finished converting mat")
-        #self.A = A
-
-        PETSc.Sys.Print(f"Type A {type(A)}")
-        #PETSc.Sys.Print(f"Dir A {dir(A)}")
-        PETSc.Sys.Print(f"Python Context A {A.getPythonContext()}")
-        #PETSc.Sys.Print(f"INFO:::: A {A.getInfo()}")
-        self.A = PETSc.Mat().createAIJ(size=A.getSize(), comm=A.getComm())  # Create new AIJ matrix
-        #A.copy(self.A)
+        # Block i has prefix 'aaojacobi_block_{i}', but we want to be able
+        # to set default options for all blocks using 'aaojacobi_block'.
+        # LinearVariationalSolver will prioritise options it thinks are from
+        # the command line (including those in the `inserted_options` database
+        # of the AllAtOnceSolver) over the ones passed to __init__, so we pull
+        # the default options off the global dict and pass these explicitly to LVS.
+        default_block_prefix = f"{self.full_prefix}block_"
+        default_block_options = get_default_options(
+            default_block_prefix, range(self.ntimesteps))
         
+        self.diag_matrices = []
+        self.off_diag_matrices = []
+        self.cr_rhs = []
+        self.cr_sol = []
 
-        # Create solver context
-        self.ksp = PETSc.KSP().create()
-        self.ksp.setOperators(self.A)
+        # building the block problem solvers
+        for i in range(self.nlocal_timesteps):
 
-        # Use a direct LU solver
-        self.ksp.setType(PETSc.KSP.Type.PREONLY)
-        pc = self.ksp.getPC()
-        pc.setType(PETSc.PC.Type.LU)
-        pc.setFactorSolverType("mumps")
+            # the reference states
+            u0 = self.state_func[i]
+            t0 = self.time[i]
 
-        # Set up solver
-        self.ksp.setUp()
-     
+            # the form
+            vs = fd.TestFunctions(field_function_space)
+            ##########################################
+            v = fd.TestFunction(field_function_space)
+            u = fd.TrialFunction(field_function_space)
+
+            F1 = dt1 * self.form_mass(u, v) + tht * self.form_function(u, v, t0)
+            F2 = -dt1 * self.form_mass(u, v)
+
+            A = fd.assemble(F1)
+            B = fd.assemble(F2)
+
+            self.diag_matrices.append(A)
+            self.off_diag_matrices.append(B)
+
+            #block_problem = fd.LinearVariationalProblem(A, self._x[i], self._y[i], bcs=self.block_bcs)
+            #block_solver = fd.LinearVariationalSolver(block_problem)
+            #self.block_solvers.append(block_solver)
+
+
+            ##########################################
+            us = fd.split(u0)
+
+            M = self.form_mass(*us, *vs)
+            K = self.form_function(*us, *vs, t0)
+
+
+            F = dt1*M + tht*K # (dt1*M + tht*K)u^{n+1} - (dt1*M)u^{n} = b^{n+1}
+
+            F1 = dt1*M + tht*K
+            F2 = - dt1*M
+
+            A = fd.derivative(F, u0)
+
+            # pass parameters into PC:
+            appctx_h = {
+                "dt": self.dt,
+                "theta": self.theta,
+                "tref": t0,
+                "uref": u0,
+                "bcs": self.block_bcs,
+                "form_mass": self.form_mass,
+                "form_function": self.form_function,
+            }
+
+            appctx_h.update(block_appctx)
+
+            # the global index of this block
+            ii = aaofunc.transform_index(i, from_range='slice', to_range='window')
+
+            # The block rhs/solution are the timestep i of the
+            # input/output AllAtOnceCofunction/Function
+            block_problem = fd.LinearVariationalProblem(A, self._x[i], self._y[i],
+                                                        bcs=self.block_bcs,
+                                                        constant_jacobian=True)
+
+            self.cr_sol.append(self._y[i])
+            self.cr_rhs.append(self._x[i])
+
+            block_solver = fd.LinearVariationalSolver(
+                block_problem, appctx=appctx_h,
+                options_prefix=default_block_prefix+str(ii),
+                solver_parameters=default_block_options)
+
+            self.block_solvers.append(block_solver)
+
+        self.block_iterations = SharedArray(self.time_partition,
+                                            dtype=int,
+                                            comm=self.ensemble.ensemble_comm)
         self.initialized = True
 
     
@@ -97,14 +154,97 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def update(self, pc):
+        # """
+        # Update the state to linearise around according to aaojacobi_state.
+        # """
+
+        # aaofunc = self.aaofunc
+        # aaoform = self.aaoform
+        # state_func = self.state_func
+        # jacobian_state = self.jacobian_state
+
+        # for st, ft in zip(self.time, aaoform.time):
+        #     st.assign(ft)
+
+        # if jacobian_state == 'linear':
+        #     return
+
+        # elif jacobian_state == 'current':
+        #     state_func.assign(aaofunc)
+
+        # elif jacobian_state in ('window', 'slice'):
+        #     time_average_function(aaofunc, state_func.initial_condition,
+        #                  state_func.uprev, average=jacobian_state)
+        #     state_func.assign(state_func.initial_condition)
+
+        #     for t in self.time:
+        #         if jacobian_state == 'window':
+        #             t.assign(aaoform.t0 + self.dt*(self.ntimesteps + 1)/2)
+        #         elif jacobian_state == 'slice':
+        #             i1 = aaofunc.transform_index(0, from_range='slice',
+        #                                          to_range='window')
+        #             t1 = aaoform.t0 + i1*self.dt
+        #             t.assign(t1 + self.dt*(self.nlocal_timesteps + 1)/2)
+
+        # elif jacobian_state == 'initial':
+        #     state_func.assign(aaofunc.initial_condition)
+        #     for t in self.time:
+        #         t.assign(self.aaoform.t0)
+
+        # elif jacobian_state == 'reference':
+        #     aaofunc.assign(self.jacobian.reference_state)
+
+        # elif jacobian_state == 'user':
+        #     pass
+
+        # for block in self.block_solvers:
+        #     block.invalidate_jacobian()
         pass
+
+        
 
     @profiler()
     def apply_impl(self, pc, x, y):
-        # Get PETSc vectors
-        #self.block_solver.solve()
-        with x.global_vec_ro() as xvec, y.global_vec_wo() as yvec:
-            self.ksp.solve(xvec, yvec)
+        # x and y are already the rhs and solution of the blocks
+        # with x.global_vec_ro() as xvec:
+        #     x_vec = xvec
+        #     #PETSc.Sys.Print(f"Type x_vec : {type(x_vec)}") # <class 'petsc4py.PETSc.Vec'>
+        #     #PETSc.Sys.Print(f"Type x_vec.array : {type(x_vec.array)}") # <class 'numpy.ndarray'>
+        
+        # with y.global_vec_wo() as yvec:
+        #     y_vec = yvec
+        
+
+        # self.ksp.solve(x_vec,y_vec)
+        self.forward_reduction(pc,x,y)
+        
+
+        # self._y.zero()
+        # for i in range(self.nlocal_timesteps):
+        #     self.block_solvers[i].solve()
+    @profiler()
+    def forward_reduction(self,pc,x,y):
+        
+        print(f"len diags {len(self.diag_matrices)}")
+        print(f"len off diags {len(self.off_diag_matrices)}")
+        for i in range(self.nlocal_timesteps,2): # Step twice at a time
+            main_block_i_0 = self.diag_matrices[i].copy()
+            main_block_i_1 = self.diag_matrices[i+1].copy()
+
+            lower_block_i_0 = self.off_diag_matrices[i].copy()
+            lower_block_i_1 = self.off_diag_matrices[i+1].copy()
+
+            u_i_0 = self.cr_sol[i].copy()
+            u_i_1 = self.cr_sol[i+1].copy()
+
+            rhs_i_0 = self.cr_rhs[i].copy()
+            rhs_i_1 = self.cr_rhs[i+1].copy()
+
+
+
+
+
+        pass
 
 class CyclicReductionPC1(AllAtOnceBlockPCBase):
    

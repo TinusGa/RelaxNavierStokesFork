@@ -5,12 +5,13 @@ from asQ import (
     AllAtOnceFunction,
     AllAtOnceForm,
     AllAtOnceSolver,
+    LinearSolver,
 )
 
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-time_partition = [64, 64, 64, 64]
+time_partition = [8, 8, 8, 8]
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
@@ -68,16 +69,42 @@ aaoform = AllAtOnceForm(aaofunc,
 # asQ solver parameters
 solver_parameters = {
     'snes_type': 'ksponly',
-    #'mat_type': 'matfree',
+    'mat_type': 'aij',
     'ksp_type': 'richardson',
     'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
-    'circulant_block': {'pc_type': 'lu'},
-    'circulant_alpha': 1e-4
+    #'circulant_block': {'pc_type': 'lu'},
+    #'circulant_alpha': 1e-4
 }
+
+# solver_parameters = {
+#     'snes_type': 'ksponly',
+#     'mat_type': 'matfree',
+#     'ksp_type': 'richardson',
+#     'ksp_rtol': 1e-12,
+#     'ksp_monitor': None,
+#     'ksp_converged_rate': None,
+#     'pc_type': 'python',
+#     'pc_python_type': 'asQ.SliceJacobiPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
+#     'slice_jacobi_nsteps': time_partition[0]*4,
+#     #'slice_jacobi_slice': {'pc_type': 'lu'}
+# }
+
+# solver_parameters = {
+#     'snes_type': 'ksponly',
+#     'mat_type': 'matfree',
+#     'ksp_type': 'richardson',
+#     'ksp_rtol': 1e-12,
+#     'ksp_monitor': None,
+#     'ksp_converged_rate': None,
+#     'pc_type': 'python',
+#     'pc_python_type': 'asQ.JacobiPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
+#     #'slice_jacobi_nsteps': time_partition[0]*4,
+#     #'slice_jacobi_slice': {'pc_type': 'lu'}
+# }
 
 # Solver Parameters for heat equation from RelaxNavierStokes code.
 # Want to transition from above parameters to the ones below.
@@ -111,6 +138,7 @@ solver_parameters = {
 aaosolver = AllAtOnceSolver(aaoform, 
                             aaofunc, 
                             solver_parameters)
+
 
 aaofunc.assign(u0)
 
