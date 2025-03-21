@@ -12,6 +12,8 @@ from asQ.common import get_option_from_list, get_deprecated_option
 from asQ.allatonce.function import time_average as time_average_function
 from asQ.preconditioners.base import AllAtOnceBlockPCBase, get_default_options
 
+from asQ.ensemble import split_ensemble
+
 from asQ.parallel_arrays import SharedArray
 
 from functools import partial
@@ -69,6 +71,31 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.cr_rhs = []
         self.cr_sol = []
 
+        ##############3 SLICE CODE #####################3
+        # how many timesteps in each slice?
+        slice_size = PETSc.Options().getInt(
+            f"{self.full_prefix}nsteps",default = 8)
+
+        # we need to work out how many members of the global ensemble
+        # needed to get `split_size` timesteps on each slice ensemble
+        slice_members = slice_size // self.time_partition[0]
+        nslices = self.ntimesteps // slice_size
+
+        # create the ensemble for the local slice by splitting the global ensemble
+        self.slice_ensemble = split_ensemble(self.ensemble,
+                                             split_size=slice_members)
+
+        # which slice are we in?
+        self.slice_rank = self.ensemble.ensemble_comm.rank // slice_members
+
+        PETSc.Sys.Print(f"Slice size: {slice_size}")
+        PETSc.Sys.Print(f"Slice members: {slice_members}")
+        PETSc.Sys.Print(f"n slices: {nslices}")
+        print(f"Slice rank: {self.slice_rank}")
+
+        # self.slice_rank == 0 should hold "u^{0}"
+        ##########################################
+
         # building the block problem solvers
         for i in range(self.nlocal_timesteps):
 
@@ -78,24 +105,36 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             # the form
             vs = fd.TestFunctions(field_function_space)
+
+            # My version:
             ##########################################
             v = fd.TestFunction(field_function_space)
             u = fd.TrialFunction(field_function_space)
 
-            F1 = dt1 * self.form_mass(u, v) + tht * self.form_function(u, v, t0)
-            F2 = -dt1 * self.form_mass(u, v)
+            M_mass = self.form_mass(u, v)
+            K_stiff = self.form_function(u, v, t0)
+
+            F1 = dt1 * M_mass + tht * K_stiff
+            F2 = -dt1 * M_mass
 
             A = fd.assemble(F1)
             B = fd.assemble(F2)
 
-            self.diag_matrices.append(A)
-            self.off_diag_matrices.append(B)
-
-            #block_problem = fd.LinearVariationalProblem(A, self._x[i], self._y[i], bcs=self.block_bcs)
-            #block_solver = fd.LinearVariationalSolver(block_problem)
-            #self.block_solvers.append(block_solver)
+            A_petsc = fd.as_backend_type(A).mat()
+            B_petsc = fd.as_backend_type(B).mat()
 
 
+            self.diag_matrices.append(A_petsc)
+            self.off_diag_matrices.append(B_petsc)
+
+            sol_vec = fd.as_backend_type(self._y[i].vector()).vec()
+            rhs_vec = fd.as_backend_type(self._x[i].vector()).vec()
+
+            self.cr_sol.append(sol_vec)
+            self.cr_rhs.append(rhs_vec)
+
+            # Checked sizes previously. They seem to match!
+            #  
             ##########################################
             us = fd.split(u0)
 
@@ -154,51 +193,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def update(self, pc):
-        # """
-        # Update the state to linearise around according to aaojacobi_state.
-        # """
 
-        # aaofunc = self.aaofunc
-        # aaoform = self.aaoform
-        # state_func = self.state_func
-        # jacobian_state = self.jacobian_state
-
-        # for st, ft in zip(self.time, aaoform.time):
-        #     st.assign(ft)
-
-        # if jacobian_state == 'linear':
-        #     return
-
-        # elif jacobian_state == 'current':
-        #     state_func.assign(aaofunc)
-
-        # elif jacobian_state in ('window', 'slice'):
-        #     time_average_function(aaofunc, state_func.initial_condition,
-        #                  state_func.uprev, average=jacobian_state)
-        #     state_func.assign(state_func.initial_condition)
-
-        #     for t in self.time:
-        #         if jacobian_state == 'window':
-        #             t.assign(aaoform.t0 + self.dt*(self.ntimesteps + 1)/2)
-        #         elif jacobian_state == 'slice':
-        #             i1 = aaofunc.transform_index(0, from_range='slice',
-        #                                          to_range='window')
-        #             t1 = aaoform.t0 + i1*self.dt
-        #             t.assign(t1 + self.dt*(self.nlocal_timesteps + 1)/2)
-
-        # elif jacobian_state == 'initial':
-        #     state_func.assign(aaofunc.initial_condition)
-        #     for t in self.time:
-        #         t.assign(self.aaoform.t0)
-
-        # elif jacobian_state == 'reference':
-        #     aaofunc.assign(self.jacobian.reference_state)
-
-        # elif jacobian_state == 'user':
-        #     pass
-
-        # for block in self.block_solvers:
-        #     block.invalidate_jacobian()
         pass
 
         
@@ -216,7 +211,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
 
         # self.ksp.solve(x_vec,y_vec)
-        self.forward_reduction(pc,x,y)
+
+        self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
         
 
         # self._y.zero()
@@ -224,28 +220,125 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         #     self.block_solvers[i].solve()
     @profiler()
     def forward_reduction(self,pc,x,y):
+
+        B_s = []
+        A_s = []
+        f_s = []
         
-        print(f"len diags {len(self.diag_matrices)}")
-        print(f"len off diags {len(self.off_diag_matrices)}")
-        for i in range(self.nlocal_timesteps,2): # Step twice at a time
-            main_block_i_0 = self.diag_matrices[i].copy()
-            main_block_i_1 = self.diag_matrices[i+1].copy()
+        time_steps = self.nlocal_timesteps
+        current_diag = self.diag_matrices.copy()
+        current_off_diag = self.off_diag_matrices.copy()
+        current_rhs = self.cr_rhs.copy()
+        current_sol = self.cr_sol.copy()
 
-            lower_block_i_0 = self.off_diag_matrices[i].copy()
-            lower_block_i_1 = self.off_diag_matrices[i+1].copy()
+        while time_steps != 1:
 
-            u_i_0 = self.cr_sol[i].copy()
-            u_i_1 = self.cr_sol[i+1].copy()
+            next_diag = []
+            next_off_diag = []
+            next_rhs = []
+            next_sol = []
 
-            rhs_i_0 = self.cr_rhs[i].copy()
-            rhs_i_1 = self.cr_rhs[i+1].copy()
+            for i in range(0,self.nlocal_timesteps,2): # Step twice at a time
+                A1 = current_diag[i]
+                A2 = current_diag[i+1]
 
+                B1 = current_off_diag[i]
+                B2 = current_off_diag[i+1]
 
+                u1 = current_sol[i]
+                u2 = current_sol[i+1]
 
+                rhs1 = current_rhs[i]
+                rhs2 = current_rhs[i+1]
 
+                # --- Store for backward substitution ---
+                B_s.append(B1.copy())
+                A_s.append(A1.copy())
+                f_s.append(rhs1.copy())
 
+                # === Create KSP solver for A1 ===
+                ksp = PETSc.KSP().create()
+                ksp.setOperators(A1)
+                ksp.setType("preonly")
+                ksp.getPC().setType("lu")
+                ksp.setFromOptions()
+
+                # === Compute A1^{-1} * f1 ===
+                A1inv_f1 = rhs1.duplicate()
+                try: 
+                    ksp.solve(rhs1, A1inv_f1)
+                except Exception as e:
+                    raise ValueError(f"Mi affi bludclart cannot make dis: {e}")
+
+                # === Compute B2 * A1^{-1} * f1 ===
+                B2A1inv_f1 = B2.matMult(A1inv_f1)
+
+                # === Compute new RHS: B2 A1^{-1} f1 - f2 ===
+                new_f1 = rhs2.copy()
+                new_f1.scale(-1.0)                  # -f2
+                new_f1.axpy(1.0, B2A1inv_f1)        # + B2 * A1^{-1} * f1
+
+                # === Compute A1^{-1} * B1 column-wise ===
+                ncols = B1.getSize()[1]
+                nrows = B1.getSize()[0]
+                A1inv_B1_dense = PETSc.Mat().createDense([nrows, ncols], comm=PETSc.COMM_SELF)
+                A1inv_B1_dense.setUp()
+
+                for j in range(ncols):
+                    ej = PETSc.Vec().createSeq(ncols)
+                    ej.setValue(j, 1.0)
+                    ej.assemble()
+
+                    B1_col = B1.matMult(ej)  # Get column j of B1
+                    col_result = B1_col.duplicate()
+                    ksp.solve(B1_col, col_result)
+
+                    A1inv_B1_dense.setValues(range(nrows), [j], col_result.getArray())
+
+                    ej.destroy()
+                    B1_col.destroy()
+                    col_result.destroy()
+
+                A1inv_B1_dense.assemble()
+
+                # === Compute B2 * A1^{-1} * B1 ===
+                new_B1 = B2.matMult(A1inv_B1_dense)
+
+                # === Set new A (really -A2) ===
+                new_A1 = A2.copy()
+                new_A1.scale(-1.0)
+
+                # === Store for next level of reduction ===
+                next_diag.append(new_B1)
+                next_off_diag.append(new_A1)
+                next_rhs.append(new_f1)
+                next_sol.append(u2.duplicate())  # Placeholder for next solution
+
+                # Compute: A1^{-1}
+                # Compute: B2 * A1^{-1}
+                # Compute: B2 * A1^{-1} * B1
+                # Set new_B1 <- B2 * A1^{-1} * B1
+                # Set new_A1 <- - A2
+                # Compute: B2 * A1^{-1} * f1 - f2
+                # Set new_f1 <-  B2 * A1^{-1} * f1 - f2
+
+                # next_diag.append(new_B1)
+                # next_off_diag.append(new_A1)
+                # next_rhs.append(new_f1)
+            
+            current_diag = next_diag
+            current_off_diag = next_off_diag
+            current_rhs = next_rhs
+            current_sol = next_sol
+            PETSc.Sys.Print(f"len(current_diag) {len(current_diag)}")
+            PETSc.Sys.Print(f"len(current_off_diag) {len(current_off_diag)}")
+            PETSc.Sys.Print(f"len(current_rhs) {len(current_rhs)}")
+            PETSc.Sys.Print(f"len(current_sol) {len(current_sol)}")
+                
+            PETSc.Sys.Print(f"time_steps = {time_steps}")
+            time_steps = time_steps//2
+   
         pass
-
 class CyclicReductionPC1(AllAtOnceBlockPCBase):
    
     prefix = "circulant_"

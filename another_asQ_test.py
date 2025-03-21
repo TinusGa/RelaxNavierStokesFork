@@ -16,28 +16,38 @@ time_partition = [8, 8, 8, 8]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-base_mesh = UnitSquareMesh(nx = 5, ny = 5, distribution_parameters=distribution_parameters, comm = ensemble.comm)
-spatial_mesh = MeshHierarchy(base_mesh, refinement_levels = 3)
+nx = 10
+ny = 10
+mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
 
-N = 20
+processors = COMM_WORLD.size # total number of processors
+temporal_processors = len(time_partition) # number of temporal processors
+
+# The all-at-once matrix must be of block size (n+1)x(n+1) where n = p*2^k. p is the number of temporal processes. k is an integer.
+# If the spatial discretization has m DOF's, then all-at-once matrix should have total size (n+1)*m x (n+1)*m.
+
+N = 20 # This is useless per now
 dt = 0.001
 
-# Extruded mesh hierarchy not compatible with asQ methods. Needs work. 
-
-# mesh_hierarchy = ExtrudedMeshHierarchy(
-#     base_hierarchy= spatial_mesh, 
-#     height = N*dt, 
-#     base_layer = N,
-#     refinement_ratio = 1,
-#     extrusion_type = 'uniform'
-#     )
-
-#mesh = mesh_hierarchy[-1]
-
-mesh = spatial_mesh[-1]
 n = FacetNormal(mesh)
 
 degree_space = 1
+
+# Expected dof's in space:
+space_dofs = (nx+1)*(ny+1)*degree_space
+PETSc.Sys.Print(f"DOF's space: {space_dofs}")
+# Expected dof's in time
+time_dofs = sum(time_partition)
+PETSc.Sys.Print(f"DOF's time: {time_dofs}")
+# Total
+total_dofs = time_dofs*space_dofs
+PETSc.Sys.Print(f"DOF's total: {total_dofs}")
+# dof's division per proc:
+dof_by_total_proc = total_dofs/processors
+dof_distribution = [int(dof_by_total_proc*i) for i in range(processors+1)] # Does not take into account overlapping dof's between procs
+PETSc.Sys.Print(f"DOF's distribution: {dof_distribution}")
+
+
 V = FunctionSpace(mesh, "CG", degree_space)
 
 x, y = SpatialCoordinate(V.mesh())
@@ -76,6 +86,7 @@ solver_parameters = {
     'ksp_converged_rate': None,
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
+    'cyclic_reduction_nsteps': time_partition[0] # n steps per time processor of CR
     #'circulant_block': {'pc_type': 'lu'},
     #'circulant_alpha': 1e-4
 }
