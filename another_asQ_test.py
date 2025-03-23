@@ -86,7 +86,7 @@ solver_parameters = {
     'ksp_converged_rate': None,
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
-    'cyclic_reduction_nsteps': time_partition[0] # n steps per time processor of CR
+    'cyclic_reduction_nsteps': time_partition[0], # n steps per time processor of CR
     #'circulant_block': {'pc_type': 'lu'},
     #'circulant_alpha': 1e-4
 }

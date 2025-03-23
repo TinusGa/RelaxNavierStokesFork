@@ -31,6 +31,10 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # Initialize is called once per MPI processors
         super().initialize(pc, final_initialize=False)
 
+        # PETSc.Sys.Print(f"Self.prefix: {self.prefix}")
+        # prefix = pc.getOptionsPrefix()
+        # PETSc.Sys.Print(f"Prefix: {prefix}")
+
         aaofunc = self.aaofunc
 
         # all-at-once reference state
@@ -209,15 +213,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # with y.global_vec_wo() as yvec:
         #     y_vec = yvec
         
-
         # self.ksp.solve(x_vec,y_vec)
 
         self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
         
-
         # self._y.zero()
         # for i in range(self.nlocal_timesteps):
         #     self.block_solvers[i].solve()
+
     @profiler()
     def forward_reduction(self,pc,x,y):
 
@@ -248,33 +251,23 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 u1 = current_sol[i]
                 u2 = current_sol[i+1]
 
-                rhs1 = current_rhs[i]
-                rhs2 = current_rhs[i+1]
+                f1 = current_rhs[i]
+                f2 = current_rhs[i+1]
 
                 # --- Store for backward substitution ---
                 B_s.append(B1.copy())
                 A_s.append(A1.copy())
-                f_s.append(rhs1.copy())
-
-                # === Create KSP solver for A1 ===
-                ksp = PETSc.KSP().create()
-                ksp.setOperators(A1)
-                ksp.setType("preonly")
-                ksp.getPC().setType("lu")
-                ksp.setFromOptions()
+                f_s.append(f1.copy())
 
                 # === Compute A1^{-1} * f1 ===
-                A1inv_f1 = rhs1.duplicate()
-                try: 
-                    ksp.solve(rhs1, A1inv_f1)
-                except Exception as e:
-                    raise ValueError(f"Mi affi bludclart cannot make dis: {e}")
-
+                A1inv_f1 = f1.duplicate() 
+                A1.solve(f1, A1inv_f1) # A.solve(b,x) to solve Ax = b. Result is then stored in x
+    
                 # === Compute B2 * A1^{-1} * f1 ===
                 B2A1inv_f1 = B2.matMult(A1inv_f1)
 
                 # === Compute new RHS: B2 A1^{-1} f1 - f2 ===
-                new_f1 = rhs2.copy()
+                new_f1 = f2.copy()
                 new_f1.scale(-1.0)                  # -f2
                 new_f1.axpy(1.0, B2A1inv_f1)        # + B2 * A1^{-1} * f1
 
@@ -339,6 +332,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             time_steps = time_steps//2
    
         pass
+
+    
 class CyclicReductionPC1(AllAtOnceBlockPCBase):
    
     prefix = "circulant_"
