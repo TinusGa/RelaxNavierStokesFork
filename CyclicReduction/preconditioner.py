@@ -99,7 +99,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         # self.slice_rank == 0 should hold "u^{0}"
         ##########################################
-
+        _, A = pc.getOperators()
         # building the block problem solvers
         for i in range(self.nlocal_timesteps):
 
@@ -118,8 +118,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             M_mass = self.form_mass(u, v)
             K_stiff = self.form_function(u, v, t0)
 
-            F1 = dt1 * M_mass + tht * K_stiff
-            F2 = -dt1 * M_mass
+            F1 = dt1 * M_mass + tht * K_stiff # Main diagonal block system
+            F2 = -dt1 * M_mass # Lower/off - diagonal block system
 
             A = fd.assemble(F1)
             B = fd.assemble(F2)
@@ -146,7 +146,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             K = self.form_function(*us, *vs, t0)
 
 
-            F = dt1*M + tht*K # (dt1*M + tht*K)u^{n+1} - (dt1*M)u^{n} = b^{n+1}
+            F = dt1*M + tht*K # (dt1*M + tht*K)u^{n+1} - (dt1*M)u^{n} = b^{n+1} ?
 
             F1 = dt1*M + tht*K
             F2 = - dt1*M
@@ -175,8 +175,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                                                         bcs=self.block_bcs,
                                                         constant_jacobian=True)
 
-            self.cr_sol.append(self._y[i])
-            self.cr_rhs.append(self._x[i])
+            # self.cr_sol.append(self._y[i])
+            # self.cr_rhs.append(self._x[i])
 
             block_solver = fd.LinearVariationalSolver(
                 block_problem, appctx=appctx_h,
@@ -241,7 +241,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             next_rhs = []
             next_sol = []
 
-            for i in range(0,self.nlocal_timesteps,2): # Step twice at a time
+            for i in range(0,time_steps,2): # Step twice at a time
                 A1 = current_diag[i]
                 A2 = current_diag[i+1]
 
@@ -254,49 +254,65 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 f1 = current_rhs[i]
                 f2 = current_rhs[i+1]
 
+                # PETSc.Sys.Print(f"Size check! A1 : {A1.getSize()}") # (121,121)
+                # PETSc.Sys.Print(f"Size check! A2 : {A2.getSize()}")
+                # PETSc.Sys.Print(f"Size check! B1 : {B1.getSize()}")
+                # PETSc.Sys.Print(f"Size check! B2 : {B2.getSize()}")
+                # PETSc.Sys.Print(f"Size check! f1 : {f1.getSize()}") # (121)
+                # PETSc.Sys.Print(f"Size check! f2 : {f2.getSize()}")
+                # PETSc.Sys.Print(f"Size check! u1 : {u1.getSize()}")
+                # PETSc.Sys.Print(f"Size check! u2 : {u2.getSize()}")
+
                 # --- Store for backward substitution ---
                 B_s.append(B1.copy())
                 A_s.append(A1.copy())
                 f_s.append(f1.copy())
 
                 # === Compute A1^{-1} * f1 ===
-                A1inv_f1 = f1.duplicate() 
-                A1.solve(f1, A1inv_f1) # A.solve(b,x) to solve Ax = b. Result is then stored in x
-    
-                # === Compute B2 * A1^{-1} * f1 ===
-                B2A1inv_f1 = B2.matMult(A1inv_f1)
+                A1inv_f1 = f1.duplicate()
 
-                # === Compute new RHS: B2 A1^{-1} f1 - f2 ===
+                ksp = PETSc.KSP().create()
+                ksp.setOperators(A1)
+                ksp.setOptionsPrefix(self.full_prefix + "cyclic_reduction_")
+                ksp.setFromOptions()
+                ksp.solve(f1,A1inv_f1)
+
+                # === Compute B2 * A1^{-1} * f1 - f2. Store in new_f1 (new RHS) ===
                 new_f1 = f2.copy()
-                new_f1.scale(-1.0)                  # -f2
-                new_f1.axpy(1.0, B2A1inv_f1)        # + B2 * A1^{-1} * f1
+                f2.scale(-1.0) # Set f2 <- -f2
+                B2.multAdd(A1inv_f1, f2, new_f1) # A.multAdd(x,v,y) computes A@x + v and stores in y
 
-                # === Compute A1^{-1} * B1 column-wise ===
-                ncols = B1.getSize()[1]
-                nrows = B1.getSize()[0]
-                A1inv_B1_dense = PETSc.Mat().createDense([nrows, ncols], comm=PETSc.COMM_SELF)
-                A1inv_B1_dense.setUp()
+                # === Compute A1^{-1} * B1 column-wise === THIS IS TERRIBLE
 
-                for j in range(ncols):
-                    ej = PETSc.Vec().createSeq(ncols)
-                    ej.setValue(j, 1.0)
-                    ej.assemble()
+                #A1inv_B1 = B1.copy()
 
-                    B1_col = B1.matMult(ej)  # Get column j of B1
-                    col_result = B1_col.duplicate()
-                    ksp.solve(B1_col, col_result)
+                # Assume B1 has shape (m, n)
+                m, n = B1.getSize()
 
-                    A1inv_B1_dense.setValues(range(nrows), [j], col_result.getArray())
+                # Create empty matrix for A1inv_B1
+                A1inv_B1 = PETSc.Mat().createAIJ(size=(m, n), comm=PETSc.COMM_WORLD)
+                A1inv_B1.setUp()
 
-                    ej.destroy()
-                    B1_col.destroy()
-                    col_result.destroy()
+                for j in range(n):
+                    bj = B1.getColumnVector(j)
+                    xj = bj.duplicate()
+                    ksp.solve(bj, xj)
 
-                A1inv_B1_dense.assemble()
+                    # Insert values from xj into column j of A1inv_B1
+                    idxs = xj.getOwnershipRange()
+                    values = xj.getArray()
+                    for i_local, i_global in enumerate(range(*idxs)):
+                        A1inv_B1.setValue(i_global, j, values[i_local])
 
-                # === Compute B2 * A1^{-1} * B1 ===
-                new_B1 = B2.matMult(A1inv_B1_dense)
+                A1inv_B1.assemble()
 
+                # === Compute B2 * A1^{-1} * B1. Store in new_B1 ===
+                new_B1 = B1.copy()
+
+                #B2.matMult(A1inv_B1,new_B1) # A.matMult(B,C) to compute C = AB. Stored in C
+                PETSc.Sys.Print(f"Size A1inv_B1 : {A1inv_B1.getSize()}") # (121,121)
+                PETSc.Sys.Print(f"Size new_B1 : {new_B1.getSize()}") # (121,121)
+                
                 # === Set new A (really -A2) ===
                 new_A1 = A2.copy()
                 new_A1.scale(-1.0)

@@ -11,7 +11,7 @@ from asQ import (
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-time_partition = [8, 8, 8, 8]
+time_partition = [8, 8, 8, 8] # Add one additional time step to the first partition for an (n+1) - setup. Rest of the partitions should be 2^k for som int k. 
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
@@ -52,7 +52,7 @@ V = FunctionSpace(mesh, "CG", degree_space)
 
 x, y = SpatialCoordinate(V.mesh())
 u0 = Function(V)
-u0.project(sin(pi*x)+cos(2*pi*y))
+u0.project(sin(pi*x)*cos(2*pi*y))
 ################################################
 
 aaofunc = AllAtOnceFunction(ensemble, time_partition, V)
@@ -165,5 +165,10 @@ for i in range(1):
     aaosolver.solve()
     aaofunc.bcast_field(-1, aaofunc.initial_condition)
     aaofunc.assign(aaofunc.initial_condition)
+
+final_sol = aaosolver.aaofunc._vec.getArray() # aaosolver.aaofunc._vec.getArray() -> np.array() with final sol?
+
+
+PETSc.Sys.Print(f"{type(aaosolver.aaofunc._vec.getArray())}") 
 
 
