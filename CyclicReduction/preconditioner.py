@@ -263,6 +263,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 # Create empty matrix for A1inv_B1
                 A1inv_B1 = PETSc.Mat().createAIJ(size=(m, n))
                 A1inv_B1.setUp()
+                
                 for j in range(n):
                     bj = B1.getColumnVector(j)
                     xj = bj.duplicate()
@@ -274,9 +275,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                     for i_local, i_global in enumerate(range(*idxs)):
                         A1inv_B1.setValue(i_global, j, values[i_local])
 
-                PETSc.Sys.Print(f"Finished here 3")
-                A1inv_B1.assemble()
-                PETSc.Sys.Print(f"Finished here 4")
+                A1inv_B1.assemble() # This step is currently stuck...
 
                 PETSc.Sys.Print(f"A1inv_B1 sizes: {A1inv_B1.getSizes()}")
 
