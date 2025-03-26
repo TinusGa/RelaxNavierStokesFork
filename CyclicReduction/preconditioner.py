@@ -1,5 +1,6 @@
 import firedrake as fd
 from firedrake.petsc import PETSc
+from firedrake import COMM_SELF, COMM_WORLD
 
 from warnings import warn
 import numpy as np
@@ -30,10 +31,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
     def initialize(self,pc):
         # Initialize is called once per MPI processors
         super().initialize(pc, final_initialize=False)
-
-        # PETSc.Sys.Print(f"Self.prefix: {self.prefix}")
-        # prefix = pc.getOptionsPrefix()
-        # PETSc.Sys.Print(f"Prefix: {prefix}")
 
         aaofunc = self.aaofunc
 
@@ -75,32 +72,15 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.cr_rhs = []
         self.cr_sol = []
 
-        ##############3 SLICE CODE #####################3
-        # how many timesteps in each slice?
-        slice_size = PETSc.Options().getInt(
-            f"{self.full_prefix}nsteps",default = 8)
 
-        # we need to work out how many members of the global ensemble
-        # needed to get `split_size` timesteps on each slice ensemble
-        slice_members = slice_size // self.time_partition[0]
-        nslices = self.ntimesteps // slice_size
+        self.spatial_rank = self.ensemble.comm.rank
+        self.temporal_rank = self.ensemble.ensemble_comm.rank
 
-        # create the ensemble for the local slice by splitting the global ensemble
-        self.slice_ensemble = split_ensemble(self.ensemble,
-                                             split_size=slice_members)
+        #PETSc.Sys.Print(f"Temporal rank {self.temporal_rank} with spatial rank {self.spatial_rank}", comm = COMM_SELF)
 
-        # which slice are we in?
-        self.slice_rank = self.ensemble.ensemble_comm.rank // slice_members
-
-        PETSc.Sys.Print(f"Slice size: {slice_size}")
-        PETSc.Sys.Print(f"Slice members: {slice_members}")
-        PETSc.Sys.Print(f"n slices: {nslices}")
-        print(f"Slice rank: {self.slice_rank}")
-
-        # self.slice_rank == 0 should hold "u^{0}"
-        ##########################################
         _, A = pc.getOperators()
-        # building the block problem solvers
+
+        # Building the block problem solvers
         for i in range(self.nlocal_timesteps):
 
             # the reference states
@@ -126,6 +106,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             A_petsc = fd.as_backend_type(A).mat()
             B_petsc = fd.as_backend_type(B).mat()
+
+            ownership_ranges = A_petsc.getOwnershipRange()
+            ownership_ranges_col = A_petsc.getOwnershipRangeColumn()
+            # PETSc.Sys.Print(f"Ownership, range: {ownership_ranges}, col: {ownership_ranges_col}", comm = COMM_SELF)
+            # PETSc.Sys.Print(f"Sizes: {A_petsc.getSizes()} \n", comm = COMM_SELF)
 
 
             self.diag_matrices.append(A_petsc)
@@ -175,9 +160,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                                                         bcs=self.block_bcs,
                                                         constant_jacobian=True)
 
-            # self.cr_sol.append(self._y[i])
-            # self.cr_rhs.append(self._x[i])
-
             block_solver = fd.LinearVariationalSolver(
                 block_problem, appctx=appctx_h,
                 options_prefix=default_block_prefix+str(ii),
@@ -200,8 +182,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         pass
 
-        
-
     @profiler()
     def apply_impl(self, pc, x, y):
         # x and y are already the rhs and solution of the blocks
@@ -214,7 +194,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         #     y_vec = yvec
         
         # self.ksp.solve(x_vec,y_vec)
-
+        #PETSc.Sys.Print(f"Whose calling? Rank {self.temporal_rank} subrank {self.spatial_rank}",comm=COMM_SELF)
         self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
         
         # self._y.zero()
@@ -254,15 +234,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 f1 = current_rhs[i]
                 f2 = current_rhs[i+1]
 
-                # PETSc.Sys.Print(f"Size check! A1 : {A1.getSize()}") # (121,121)
-                # PETSc.Sys.Print(f"Size check! A2 : {A2.getSize()}")
-                # PETSc.Sys.Print(f"Size check! B1 : {B1.getSize()}")
-                # PETSc.Sys.Print(f"Size check! B2 : {B2.getSize()}")
-                # PETSc.Sys.Print(f"Size check! f1 : {f1.getSize()}") # (121)
-                # PETSc.Sys.Print(f"Size check! f2 : {f2.getSize()}")
-                # PETSc.Sys.Print(f"Size check! u1 : {u1.getSize()}")
-                # PETSc.Sys.Print(f"Size check! u2 : {u2.getSize()}")
-
                 # --- Store for backward substitution ---
                 B_s.append(B1.copy())
                 A_s.append(A1.copy())
@@ -287,12 +258,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 #A1inv_B1 = B1.copy()
 
                 # Assume B1 has shape (m, n)
-                m, n = B1.getSize()
+                m, n = B1.getLocalSize() # Get local
 
                 # Create empty matrix for A1inv_B1
-                A1inv_B1 = PETSc.Mat().createAIJ(size=(m, n), comm=PETSc.COMM_WORLD)
+                A1inv_B1 = PETSc.Mat().createAIJ(size=(m, n))
                 A1inv_B1.setUp()
-
                 for j in range(n):
                     bj = B1.getColumnVector(j)
                     xj = bj.duplicate()
@@ -304,14 +274,29 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                     for i_local, i_global in enumerate(range(*idxs)):
                         A1inv_B1.setValue(i_global, j, values[i_local])
 
+                PETSc.Sys.Print(f"Finished here 3")
                 A1inv_B1.assemble()
+                PETSc.Sys.Print(f"Finished here 4")
+
+                PETSc.Sys.Print(f"A1inv_B1 sizes: {A1inv_B1.getSizes()}")
 
                 # === Compute B2 * A1^{-1} * B1. Store in new_B1 ===
                 new_B1 = B1.copy()
 
-                #B2.matMult(A1inv_B1,new_B1) # A.matMult(B,C) to compute C = AB. Stored in C
-                PETSc.Sys.Print(f"Size A1inv_B1 : {A1inv_B1.getSize()}") # (121,121)
-                PETSc.Sys.Print(f"Size new_B1 : {new_B1.getSize()}") # (121,121)
+                # # PETSc.Sys.Print(f"Type new_B1: {type(new_B1)}")
+                # # PETSc.Sys.Print(f"Type A1inv_B1: {type(A1inv_B1)}")
+
+                # # B2.matMult(A1inv_B1,new_B1) # A.matMult(B,C) to compute C = AB. Stored in C
+
+                # C, _ = PETSc.MatMatMult(A1inv_B1, new_B1)
+
+                # new_B1, _ = PETSc.MatMatMult(B2, A1inv_B1)
+                # PETSc.Sys.Print(f"Sizes B2: {B2.getSizes()}")
+                # PETSc.Sys.Print(f"Sizes A1inv_B1: {A1inv_B1.getSizes()}")
+                # new_B1 = B2.matMult(A1inv_B1)
+
+                # PETSc.Sys.Print(f"Size A1inv_B1 : {A1inv_B1.getSize()}") # (121,121)
+                # PETSc.Sys.Print(f"Size new_B1 : {new_B1.getSize()}") # (121,121)
                 
                 # === Set new A (really -A2) ===
                 new_A1 = A2.copy()
@@ -339,12 +324,12 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             current_off_diag = next_off_diag
             current_rhs = next_rhs
             current_sol = next_sol
-            PETSc.Sys.Print(f"len(current_diag) {len(current_diag)}")
-            PETSc.Sys.Print(f"len(current_off_diag) {len(current_off_diag)}")
-            PETSc.Sys.Print(f"len(current_rhs) {len(current_rhs)}")
-            PETSc.Sys.Print(f"len(current_sol) {len(current_sol)}")
+            # PETSc.Sys.Print(f"len(current_diag) {len(current_diag)}")
+            # PETSc.Sys.Print(f"len(current_off_diag) {len(current_off_diag)}")
+            # PETSc.Sys.Print(f"len(current_rhs) {len(current_rhs)}")
+            # PETSc.Sys.Print(f"len(current_sol) {len(current_sol)}")
                 
-            PETSc.Sys.Print(f"time_steps = {time_steps}")
+            # PETSc.Sys.Print(f"time_steps = {time_steps}")
             time_steps = time_steps//2
    
         pass

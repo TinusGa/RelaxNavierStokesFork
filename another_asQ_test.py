@@ -16,8 +16,8 @@ time_partition = [8, 8, 8, 8] # Add one additional time step to the first partit
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-nx = 10
-ny = 10
+nx = 9
+ny = 9
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
 
 processors = COMM_WORLD.size # total number of processors
