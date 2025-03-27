@@ -200,8 +200,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # self.ksp.solve(x_vec,y_vec)
         #PETSc.Sys.Print(f"Whose calling? Rank {self.temporal_rank} subrank {self.spatial_rank}",comm=COMM_SELF)
 
+        start = time.time()
         B_k, A_k, sol_k, f_k, B_s, A_s, f_s = self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
-        
+        end = time.time()
+
+        #PETSc.Sys.Print(f"T_rank, spat_rank {self.temporal_rank, self.spatial_rank} spent {end-start}s in forward reduction", comm=COMM_SELF)
         # Block all but one temporal_processor?? Do sequential work
         # PETSc.Sys.Print(f"Ownership range sol_k {sol_k.getOwnershipRanges()}", comm = COMM_SELF)
         # PETSc.Sys.Print(f"Ownership range y {y._vec.getOwnershipRanges()}", comm = COMM_SELF)
@@ -211,7 +214,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             pass
 
-        COMM_WORLD.Barrier()
+        #COMM_WORLD.Barrier()
         
 
         # Begin all processes again
@@ -276,6 +279,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 ksp.setOperators(A1)
                 ksp.setOptionsPrefix(self.full_prefix + "cyclic_reduction_")
                 ksp.setFromOptions()
+
                 ksp.solve(f1,A1inv_f1)
 
                 # === Compute B2 * A1^{-1} * f1 - f2. Store in new_f1 (new RHS) ===
@@ -286,39 +290,61 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 # === Compute A1^{-1} * B1 column-wise === THIS IS TERRIBLE
 
                 # Get sizes from B1
-                (m_local, m_global), (n_local, n_global) = B1.getSizes()
+                # (m_local, m_global), (n_local, n_global) = B1.getSizes()
 
-                # Create A1inv_B1 with the same layout as B1
-                A1inv_B1 = PETSc.Mat().createAIJ(
-                    size=((m_local, m_global), (n_local, n_global)),
-                    comm=self.ensemble.comm
-                )
-                A1inv_B1.setUp()
+                # # Create A1inv_B1 with the same layout as B1
+                # A1inv_B1 = PETSc.Mat().createAIJ(
+                #     size=((m_local, m_global), (n_local, n_global)),
+                #     comm=self.ensemble.comm
+                # )
+                # A1inv_B1.setUp()
 
-                # Loop over each column of B1 and solve A1 x = B1[:,j]
-                for j in range(n_global):
-                    bj = B1.getColumnVector(j)  # B1[:,j] as a PETSc Vec
-                    xj = bj.duplicate()         # Create result vector
-                    xj.set(0)                   # Safety: zero before solve
+                # # Loop over each column of B1 and solve A1 x = B1[:,j]
+                # for j in range(n_global):
+                #     bj = B1.getColumnVector(j)  # B1[:,j] as a PETSc Vec
+                #     xj = bj.duplicate()         # Create result vector
+                #     xj.set(0)                   # Safety: zero before solve
 
-                    ksp.solve(bj, xj)           # Solve A1 x = B1[:,j]
+                #     ksp.solve(bj, xj)           # Solve A1 x = B1[:,j]
 
-                    # Insert xj into column j of A1inv_B1, but only for owned rows
-                    rstart, rend = A1inv_B1.getOwnershipRange()
-                    x_array = xj.getArray()
-                    x_start, x_end = xj.getOwnershipRange()
+                #     # Insert xj into column j of A1inv_B1, but only for owned rows
+                #     rstart, rend = A1inv_B1.getOwnershipRange()
+                #     x_array = xj.getArray()
+                #     x_start, x_end = xj.getOwnershipRange()
 
-                    for i_local, i_global in enumerate(range(x_start, x_end)):
-                        if rstart <= i_global < rend:  # Only insert rows this rank owns
-                            A1inv_B1.setValue(i_global, j, x_array[i_local])
+                #     for i_local, i_global in enumerate(range(x_start, x_end)):
+                #         if rstart <= i_global < rend:  # Only insert rows this rank owns
+                #             A1inv_B1.setValue(i_global, j, x_array[i_local])
 
-                # Finalize assembly
-                A1inv_B1.assemble()
+                # # Finalize assembly
+                #A1inv_B1.assemble()
+                start = time.time()
+                # PETSc.Sys.Print(f"A1.getInfo(): {A1.getInfo()}",comm=COMM_SELF)
+                # PETSc.Sys.Print(f"A1.view(): {A1.view()}",comm=COMM_SELF)
+                # PETSc.Sys.Print(f"B1.getInfo() {B1.getInfo()}",comm=COMM_SELF)
+                # PETSc.Sys.Print(f"B1.view() {B1.view()} \n",comm=COMM_SELF)
+                PETSc.Sys.Print(f"Type A1 {A1.getType()}",comm=COMM_SELF)
+                PETSc.Sys.Print(f"Type B1 {B1.getType()}",comm=COMM_SELF)
+
+
+                A1inv_B1 = B1.copy()
+                A1.matSolve(B1,A1inv_B1)
+
+                end = time.time()
+                PETSc.Sys.Print(f"Solved matsolve and spent {end-start}s")
+
+                # start = time.time()
+                # A1inv_B1 = B1.copy()
+                # A1.factorLU()
+                # ksp.matSolve(B1,A1inv_B1)
+                # end = time.time()
+                # PETSc.Sys.Print(f"Solved ksp and spent {end-start}s")
+
 
                 # === Compute B2 * A1^{-1} * B1. Store in new_B1 ===
                 new_B1 = B1.copy()
                 new_B1 = B2.matMult(A1inv_B1)
-                
+
                 # === Set new A (really -A2) ===
                 new_A1 = A2.copy()
                 new_A1.scale(-1.0)
@@ -334,7 +360,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             current_rhs = next_rhs
             current_sol = next_sol
             time_steps = time_steps//2
-   
+        
         return current_off_diag[0], current_diag[0], current_sol[0], current_rhs[0], B_s, A_s, f_s
 
     

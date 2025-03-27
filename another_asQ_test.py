@@ -7,6 +7,7 @@ from asQ import (
     AllAtOnceSolver,
     LinearSolver,
 )
+import time
 
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
@@ -16,8 +17,8 @@ time_partition = [9, 8, 8, 8] # Add one additional time step to the first partit
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-nx = 20
-ny = 20
+nx = 12
+ny = 12
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
 
 processors = COMM_WORLD.size # total number of processors
@@ -87,6 +88,8 @@ solver_parameters = {
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
     'cyclic_reduction_nsteps': time_partition[0], # n steps per time processor of CR
+    'cyclic_reduction_pc_type': 'lu',
+    'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
     #'circulant_block': {'pc_type': 'lu'},
     #'circulant_alpha': 1e-4
 }
@@ -161,14 +164,18 @@ PETSc.Sys.Print(f"View: {A.view()}")
 
 # Solves over windows. Each window is solved using space-time parallelism. 
 # Doing the loop over a single step should solve the entire system all-at-once.
+
+start = time.time()
+
 for i in range(1):
     aaosolver.solve()
     aaofunc.bcast_field(-1, aaofunc.initial_condition)
     aaofunc.assign(aaofunc.initial_condition)
 
+PETSc.Sys.Print(f"Global solve time: {time.time()-start}s")
+
+
 final_sol = aaosolver.aaofunc._vec.getArray() # aaosolver.aaofunc._vec.getArray() -> np.array() with final sol?
-
-
 PETSc.Sys.Print(f"{type(aaosolver.aaofunc._vec.getArray())}") 
 
 
