@@ -11,13 +11,13 @@ from asQ import (
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-time_partition = [8, 8, 8, 8] # Add one additional time step to the first partition for an (n+1) - setup. Rest of the partitions should be 2^k for som int k. 
+time_partition = [9, 8, 8, 8] # Add one additional time step to the first partition for an (n+1) - setup. Rest of the partitions should be 2^k for som int k. 
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-nx = 9
-ny = 9
+nx = 20
+ny = 20
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
 
 processors = COMM_WORLD.size # total number of processors

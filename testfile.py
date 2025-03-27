@@ -8,3 +8,6 @@ for i in range(1,len(Ownership_ranges)):
     print(f"diff: {diff}")
 
 
+custom_tuple = ((1,2),(3,4))
+
+print(custom_tuple[1][0])

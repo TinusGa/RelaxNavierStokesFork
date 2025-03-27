@@ -2,6 +2,8 @@ import firedrake as fd
 from firedrake.petsc import PETSc
 from firedrake import COMM_SELF, COMM_WORLD
 
+import time
+
 from warnings import warn
 import numpy as np
 from scipy.fft import fft, ifft
@@ -72,17 +74,23 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.cr_rhs = []
         self.cr_sol = []
 
-
         self.spatial_rank = self.ensemble.comm.rank
         self.temporal_rank = self.ensemble.ensemble_comm.rank
 
         #PETSc.Sys.Print(f"Temporal rank {self.temporal_rank} with spatial rank {self.spatial_rank}", comm = COMM_SELF)
+        spatial_block_size = field_function_space.dim()
+        mT = (self.ensemble.ensemble_comm.size + 1)*spatial_block_size
+        self.intermediate_matrix = PETSc.Mat().createAIJ(size=(mT,mT),comm=self.ensemble.ensemble_comm)
+        
+        PETSc.Sys.Print(f"Inter MATRIX ownershs : {self.intermediate_matrix.getOwnershipRanges()}")
 
         _, A = pc.getOperators()
 
         # Building the block problem solvers
-        for i in range(self.nlocal_timesteps):
+        if self.temporal_rank == 0:
+            self.nlocal_timesteps -= 1
 
+        for i in range(self.nlocal_timesteps):
             # the reference states
             u0 = self.state_func[i]
             t0 = self.time[i]
@@ -107,11 +115,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             A_petsc = fd.as_backend_type(A).mat()
             B_petsc = fd.as_backend_type(B).mat()
 
-            ownership_ranges = A_petsc.getOwnershipRange()
-            ownership_ranges_col = A_petsc.getOwnershipRangeColumn()
-            # PETSc.Sys.Print(f"Ownership, range: {ownership_ranges}, col: {ownership_ranges_col}", comm = COMM_SELF)
-            # PETSc.Sys.Print(f"Sizes: {A_petsc.getSizes()} \n", comm = COMM_SELF)
-
+            self.first_block = A_petsc
 
             self.diag_matrices.append(A_petsc)
             self.off_diag_matrices.append(B_petsc)
@@ -195,8 +199,34 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         # self.ksp.solve(x_vec,y_vec)
         #PETSc.Sys.Print(f"Whose calling? Rank {self.temporal_rank} subrank {self.spatial_rank}",comm=COMM_SELF)
-        self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
+
+        B_k, A_k, sol_k, f_k, B_s, A_s, f_s = self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
         
+        # Block all but one temporal_processor?? Do sequential work
+        # PETSc.Sys.Print(f"Ownership range sol_k {sol_k.getOwnershipRanges()}", comm = COMM_SELF)
+        # PETSc.Sys.Print(f"Ownership range y {y._vec.getOwnershipRanges()}", comm = COMM_SELF)
+        # PETSc.Sys.Print(f"Ownership range x {x._vec.getOwnershipRanges()}", comm = COMM_SELF)
+
+        if self.temporal_rank == 0:
+
+            pass
+
+        COMM_WORLD.Barrier()
+        
+
+        # Begin all processes again
+        # self.backward_solution()....
+
+        # ksp = PETSc.KSP().create()
+        # ksp.setOperators(self.first_block) # [A_0, ..., 0] [x_0] = [f_0 - B_0 i.c.]
+        # ksp.setOptionsPrefix(self.full_prefix + "cyclic_reduction_")
+        # ksp.setFromOptions()
+        # ksp.solve(f1,A1inv_f1)
+
+        # First solve for x0 for first proc, send result to next proc. Solve on next proc, send to the one after. Repeat.
+
+
+
         # self._y.zero()
         # for i in range(self.nlocal_timesteps):
         #     self.block_solvers[i].solve()
@@ -255,47 +285,39 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
                 # === Compute A1^{-1} * B1 column-wise === THIS IS TERRIBLE
 
-                #A1inv_B1 = B1.copy()
+                # Get sizes from B1
+                (m_local, m_global), (n_local, n_global) = B1.getSizes()
 
-                # Assume B1 has shape (m, n)
-                m, n = B1.getLocalSize() # Get local
-
-                # Create empty matrix for A1inv_B1
-                A1inv_B1 = PETSc.Mat().createAIJ(size=(m, n))
+                # Create A1inv_B1 with the same layout as B1
+                A1inv_B1 = PETSc.Mat().createAIJ(
+                    size=((m_local, m_global), (n_local, n_global)),
+                    comm=self.ensemble.comm
+                )
                 A1inv_B1.setUp()
-                
-                for j in range(n):
-                    bj = B1.getColumnVector(j)
-                    xj = bj.duplicate()
-                    ksp.solve(bj, xj)
 
-                    # Insert values from xj into column j of A1inv_B1
-                    idxs = xj.getOwnershipRange()
-                    values = xj.getArray()
-                    for i_local, i_global in enumerate(range(*idxs)):
-                        A1inv_B1.setValue(i_global, j, values[i_local])
+                # Loop over each column of B1 and solve A1 x = B1[:,j]
+                for j in range(n_global):
+                    bj = B1.getColumnVector(j)  # B1[:,j] as a PETSc Vec
+                    xj = bj.duplicate()         # Create result vector
+                    xj.set(0)                   # Safety: zero before solve
 
-                A1inv_B1.assemble() # This step is currently stuck...
+                    ksp.solve(bj, xj)           # Solve A1 x = B1[:,j]
 
-                PETSc.Sys.Print(f"A1inv_B1 sizes: {A1inv_B1.getSizes()}")
+                    # Insert xj into column j of A1inv_B1, but only for owned rows
+                    rstart, rend = A1inv_B1.getOwnershipRange()
+                    x_array = xj.getArray()
+                    x_start, x_end = xj.getOwnershipRange()
+
+                    for i_local, i_global in enumerate(range(x_start, x_end)):
+                        if rstart <= i_global < rend:  # Only insert rows this rank owns
+                            A1inv_B1.setValue(i_global, j, x_array[i_local])
+
+                # Finalize assembly
+                A1inv_B1.assemble()
 
                 # === Compute B2 * A1^{-1} * B1. Store in new_B1 ===
                 new_B1 = B1.copy()
-
-                # # PETSc.Sys.Print(f"Type new_B1: {type(new_B1)}")
-                # # PETSc.Sys.Print(f"Type A1inv_B1: {type(A1inv_B1)}")
-
-                # # B2.matMult(A1inv_B1,new_B1) # A.matMult(B,C) to compute C = AB. Stored in C
-
-                # C, _ = PETSc.MatMatMult(A1inv_B1, new_B1)
-
-                # new_B1, _ = PETSc.MatMatMult(B2, A1inv_B1)
-                # PETSc.Sys.Print(f"Sizes B2: {B2.getSizes()}")
-                # PETSc.Sys.Print(f"Sizes A1inv_B1: {A1inv_B1.getSizes()}")
-                # new_B1 = B2.matMult(A1inv_B1)
-
-                # PETSc.Sys.Print(f"Size A1inv_B1 : {A1inv_B1.getSize()}") # (121,121)
-                # PETSc.Sys.Print(f"Size new_B1 : {new_B1.getSize()}") # (121,121)
+                new_B1 = B2.matMult(A1inv_B1)
                 
                 # === Set new A (really -A2) ===
                 new_A1 = A2.copy()
@@ -306,32 +328,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 next_off_diag.append(new_A1)
                 next_rhs.append(new_f1)
                 next_sol.append(u2.duplicate())  # Placeholder for next solution
-
-                # Compute: A1^{-1}
-                # Compute: B2 * A1^{-1}
-                # Compute: B2 * A1^{-1} * B1
-                # Set new_B1 <- B2 * A1^{-1} * B1
-                # Set new_A1 <- - A2
-                # Compute: B2 * A1^{-1} * f1 - f2
-                # Set new_f1 <-  B2 * A1^{-1} * f1 - f2
-
-                # next_diag.append(new_B1)
-                # next_off_diag.append(new_A1)
-                # next_rhs.append(new_f1)
             
             current_diag = next_diag
             current_off_diag = next_off_diag
             current_rhs = next_rhs
             current_sol = next_sol
-            # PETSc.Sys.Print(f"len(current_diag) {len(current_diag)}")
-            # PETSc.Sys.Print(f"len(current_off_diag) {len(current_off_diag)}")
-            # PETSc.Sys.Print(f"len(current_rhs) {len(current_rhs)}")
-            # PETSc.Sys.Print(f"len(current_sol) {len(current_sol)}")
-                
-            # PETSc.Sys.Print(f"time_steps = {time_steps}")
             time_steps = time_steps//2
    
-        pass
+        return current_off_diag[0], current_diag[0], current_sol[0], current_rhs[0], B_s, A_s, f_s
 
     
 class CyclicReductionPC1(AllAtOnceBlockPCBase):
