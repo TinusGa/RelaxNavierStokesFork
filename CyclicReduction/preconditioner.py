@@ -95,11 +95,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             u0 = self.state_func[i]
             t0 = self.time[i]
 
-            # the form
-            vs = fd.TestFunctions(field_function_space)
-
-            # My version:
-            ##########################################
             v = fd.TestFunction(field_function_space)
             u = fd.TrialFunction(field_function_space)
 
@@ -109,13 +104,13 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F1 = dt1 * M_mass + tht * K_stiff # Main diagonal block system
             F2 = -dt1 * M_mass # Lower/off - diagonal block system
 
-            A = fd.assemble(F1)
-            B = fd.assemble(F2)
+            A = fd.assemble(F1, bcs=self.block_bcs)
+            B = fd.assemble(F2, bcs=self.block_bcs)
 
             A_petsc = fd.as_backend_type(A).mat()
             B_petsc = fd.as_backend_type(B).mat()
 
-            self.first_block = A_petsc
+            self.first_block = A_petsc # Required for the intermediate step
 
             self.diag_matrices.append(A_petsc)
             self.off_diag_matrices.append(B_petsc)
@@ -126,54 +121,10 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             self.cr_sol.append(sol_vec)
             self.cr_rhs.append(rhs_vec)
 
-            # Checked sizes previously. They seem to match!
-            #  
-            ##########################################
-            us = fd.split(u0)
-
-            M = self.form_mass(*us, *vs)
-            K = self.form_function(*us, *vs, t0)
-
-
-            F = dt1*M + tht*K # (dt1*M + tht*K)u^{n+1} - (dt1*M)u^{n} = b^{n+1} ?
-
-            F1 = dt1*M + tht*K
-            F2 = - dt1*M
-
-            A = fd.derivative(F, u0)
-
-            # pass parameters into PC:
-            appctx_h = {
-                "dt": self.dt,
-                "theta": self.theta,
-                "tref": t0,
-                "uref": u0,
-                "bcs": self.block_bcs,
-                "form_mass": self.form_mass,
-                "form_function": self.form_function,
-            }
-
-            appctx_h.update(block_appctx)
-
-            # the global index of this block
-            ii = aaofunc.transform_index(i, from_range='slice', to_range='window')
-
-            # The block rhs/solution are the timestep i of the
-            # input/output AllAtOnceCofunction/Function
-            block_problem = fd.LinearVariationalProblem(A, self._x[i], self._y[i],
-                                                        bcs=self.block_bcs,
-                                                        constant_jacobian=True)
-
-            block_solver = fd.LinearVariationalSolver(
-                block_problem, appctx=appctx_h,
-                options_prefix=default_block_prefix+str(ii),
-                solver_parameters=default_block_options)
-
-            self.block_solvers.append(block_solver)
 
         self.block_iterations = SharedArray(self.time_partition,
                                             dtype=int,
-                                            comm=self.ensemble.ensemble_comm)
+                                            comm=self.ensemble.ensemble_comm) # Not currently used for anything
         self.initialized = True
 
     
@@ -183,7 +134,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def update(self, pc):
-
         pass
 
     @profiler()
@@ -287,63 +237,46 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 f2.scale(-1.0) # Set f2 <- -f2
                 B2.multAdd(A1inv_f1, f2, new_f1) # A.multAdd(x,v,y) computes A@x + v and stores in y
 
-                # === Compute A1^{-1} * B1 column-wise === THIS IS TERRIBLE
+                # === Compute A1^{-1} * B1 using low-level factorization and MatMatSolve ===
 
-                # Get sizes from B1
-                # (m_local, m_global), (n_local, n_global) = B1.getSizes()
+                # 1. Create and configure PC
+                local_pc = PETSc.PC().create(comm=self.ensemble.comm)
+                local_pc.setType("lu")
+                local_pc.setFactorSolverType("mumps")  # You must have PETSc built with MUMPS
+                local_pc.setOperators(A1)
+                local_pc.setUp()
 
-                # # Create A1inv_B1 with the same layout as B1
-                # A1inv_B1 = PETSc.Mat().createAIJ(
-                #     size=((m_local, m_global), (n_local, n_global)),
-                #     comm=self.ensemble.comm
-                # )
-                # A1inv_B1.setUp()
+                # 2. Extract the factored matrix
+                F = local_pc.getFactorMatrix()
 
-                # # Loop over each column of B1 and solve A1 x = B1[:,j]
-                # for j in range(n_global):
-                #     bj = B1.getColumnVector(j)  # B1[:,j] as a PETSc Vec
-                #     xj = bj.duplicate()         # Create result vector
-                #     xj.set(0)                   # Safety: zero before solve
+                B1_dense = PETSc.Mat().createDense(size=B1.getSizes(), comm=self.ensemble.comm)
+                B1_dense.setUp()
 
-                #     ksp.solve(bj, xj)           # Solve A1 x = B1[:,j]
+                # Copy sparse B1 into dense B1_dense
+                B1_dense.axpy(1.0, B1)  # B1_dense = B1
 
-                #     # Insert xj into column j of A1inv_B1, but only for owned rows
-                #     rstart, rend = A1inv_B1.getOwnershipRange()
-                #     x_array = xj.getArray()
-                #     x_start, x_end = xj.getOwnershipRange()
+                # 3. Prepare output matrix A1inv_B1
+                A1inv_B1 = PETSc.Mat().createDense(size=B1.getSizes(), comm=self.ensemble.comm)
+                A1inv_B1.setUp()
 
-                #     for i_local, i_global in enumerate(range(x_start, x_end)):
-                #         if rstart <= i_global < rend:  # Only insert rows this rank owns
-                #             A1inv_B1.setValue(i_global, j, x_array[i_local])
+                #A1inv_B1 = B1.copy()
+                
+                # 4. Matrix-matrix solve: A1inv_B1 = A1^{-1} * B1
+                try:
+                    F.matSolve(B1_dense, A1inv_B1) # matSolve(B, X)
+                except Exception as e:
+                    # PETSc.Sys.Print(f"A1 size: {A1.getSizes()}", comm=COMM_SELF)
+                    # PETSc.Sys.Print(f"F (factor) size: {F.getSizes()}", comm=COMM_SELF)
+                    # PETSc.Sys.Print(f"B1_dense size: {B1_dense.getSizes()}", comm=COMM_SELF)
+                    # PETSc.Sys.Print(f"A1inv_B1 size: {A1inv_B1.getSizes()} \n", comm=COMM_SELF)
+                    PETSc.Sys.Print(f"Error: {e}", comm=COMM_SELF)
 
-                # # Finalize assembly
-                #A1inv_B1.assemble()
-                start = time.time()
-                # PETSc.Sys.Print(f"A1.getInfo(): {A1.getInfo()}",comm=COMM_SELF)
-                # PETSc.Sys.Print(f"A1.view(): {A1.view()}",comm=COMM_SELF)
-                # PETSc.Sys.Print(f"B1.getInfo() {B1.getInfo()}",comm=COMM_SELF)
-                # PETSc.Sys.Print(f"B1.view() {B1.view()} \n",comm=COMM_SELF)
-                PETSc.Sys.Print(f"Type A1 {A1.getType()}",comm=COMM_SELF)
-                PETSc.Sys.Print(f"Type B1 {B1.getType()}",comm=COMM_SELF)
-
-
-                A1inv_B1 = B1.copy()
-                A1.matSolve(B1,A1inv_B1)
-
-                end = time.time()
-                PETSc.Sys.Print(f"Solved matsolve and spent {end-start}s")
-
-                # start = time.time()
-                # A1inv_B1 = B1.copy()
-                # A1.factorLU()
-                # ksp.matSolve(B1,A1inv_B1)
-                # end = time.time()
-                # PETSc.Sys.Print(f"Solved ksp and spent {end-start}s")
-
+                # === Compute B2 * A1^{-1} * B1 ===
+                new_B1 = B2.matMult(A1inv_B1)
 
                 # === Compute B2 * A1^{-1} * B1. Store in new_B1 ===
-                new_B1 = B1.copy()
-                new_B1 = B2.matMult(A1inv_B1)
+                # new_B1 = B1.copy()
+                # new_B1 = B2.matMult(A1inv_B1)
 
                 # === Set new A (really -A2) ===
                 new_A1 = A2.copy()
