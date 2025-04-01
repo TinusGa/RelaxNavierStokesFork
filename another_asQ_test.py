@@ -80,13 +80,13 @@ aaoform = AllAtOnceForm(aaofunc,
 # asQ solver parameters
 solver_parameters = {
     'snes_type': 'ksponly',
-    'mat_type': 'aij',
+    'mat_type': 'matfree',
     'ksp_type': 'richardson',
     'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
-    'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
+    'pc_python_type': 'CyclicReduction.CyclicReductionPC1', # to replace 'pc_python_type': 'asQ.CirculantPC',
     'cyclic_reduction_nsteps': time_partition[0], # n steps per time processor of CR
     'cyclic_reduction_pc_type': 'lu',
     'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
