@@ -227,6 +227,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 local_pc.setType("cholesky")
                 local_pc.setFactorSolverType("mumps")
                 local_pc.setOperators(A1)
+                local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
+                local_pc.getFactorMatrix().setMumpsIcntl(13, 1)
+                local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
                 local_pc.setUp()
                 F = local_pc.getFactorMatrix() # F is the factored matrix of A1
 

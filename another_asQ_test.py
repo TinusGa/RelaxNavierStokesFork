@@ -17,8 +17,8 @@ time_partition = [9, 8, 8, 8] # Add one additional time step to the first partit
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-nx = 9
-ny = 9
+nx = 20
+ny = 20
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
 
 processors = COMM_WORLD.size # total number of processors
@@ -86,7 +86,7 @@ solver_parameters = {
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
-    'pc_python_type': 'CyclicReduction.CyclicReductionPC1', # to replace 'pc_python_type': 'asQ.CirculantPC',
+    'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
     'cyclic_reduction_nsteps': time_partition[0], # n steps per time processor of CR
     'cyclic_reduction_pc_type': 'lu',
     'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
