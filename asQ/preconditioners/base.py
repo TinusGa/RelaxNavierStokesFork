@@ -1,5 +1,7 @@
 import firedrake as fd
 from firedrake.petsc import PETSc
+from firedrake import COMM_SELF, COMM_WORLD
+import numpy as np
 
 from asQ.profiling import profiler
 from asQ.common import get_option_from_list, get_deprecated_option
@@ -95,9 +97,10 @@ class AllAtOncePCBase(TimePartitionMixin):
         self.apply_impl(pc, self._x, self._y)
 
         # copy result into petsc vec
+        
         with self._y.global_vec_ro() as v:
             v.copy(y)
-
+            
         self._record_diagnostics()
 
     @profiler()

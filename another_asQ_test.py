@@ -12,13 +12,18 @@ import time
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
+# opts = PETSc.Options()
+# opts.setValue("log_view", "")
+# opts.setValue("malloc_debug", None)
+# opts.setValue("error_output_stdout", None)
+
 time_partition = [9, 8, 8, 8] # Add one additional time step to the first partition for an (n+1) - setup. Rest of the partitions should be 2^k for som int k. 
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-nx = 20
-ny = 20
+nx = 9
+ny = 9
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
 
 processors = COMM_WORLD.size # total number of processors
@@ -80,14 +85,14 @@ aaoform = AllAtOnceForm(aaofunc,
 # asQ solver parameters
 solver_parameters = {
     'snes_type': 'ksponly',
-    'mat_type': 'matfree',
+    'mat_type': 'mpiaij',
     'ksp_type': 'richardson',
     'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC', # to replace 'pc_python_type': 'asQ.CirculantPC',
-    'cyclic_reduction_nsteps': time_partition[0], # n steps per time processor of CR
+    'cyclic_reduction_nsteps': time_partition[1], # n steps per time processor of CR
     'cyclic_reduction_pc_type': 'lu',
     'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
     #'circulant_block': {'pc_type': 'lu'},
@@ -161,6 +166,7 @@ A,_ = aaosolver.snes.ksp.getOperators()
 PETSc.Sys.Print(f"Size A: {A.getSize(),A.getSizes()}")
 PETSc.Sys.Print(f"Ownership ranges: {A.getOwnershipRanges()}")
 PETSc.Sys.Print(f"View: {A.view()}")
+PETSc.Sys.Print(f"Type: {A.getVecType()}")
 
 # Solves over windows. Each window is solved using space-time parallelism. 
 # Doing the loop over a single step should solve the entire system all-at-once.
