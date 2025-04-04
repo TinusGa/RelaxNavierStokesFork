@@ -174,20 +174,15 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         # self.ksp.solve(x_vec,y_vec)
         #PETSc.Sys.Print(f"Whose calling? Rank {self.temporal_rank} subrank {self.spatial_rank}",comm=COMM_SELF)
-        start = time.time()
+
         B_k, A_k, f_k, B_s, A_s, f_s = self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
-        end = time.time()
 
-        #PETSc.Sys.Print(f"T_rank, spat_rank {self.temporal_rank, self.spatial_rank} spent {end-start}s in forward reduction", comm=COMM_SELF)
-        # Block all but one temporal_processor?? Do sequential work
-        # PETSc.Sys.Print(f"Ownership range sol_k {sol_k.getOwnershipRanges()}", comm = COMM_SELF)
-        # PETSc.Sys.Print(f"Ownership range y {y._vec.getOwnershipRanges()}", comm = COMM_SELF)
-        # PETSc.Sys.Print(f"Ownership range x {x._vec.getOwnershipRanges()}", comm = COMM_SELF)
+        # N Temporal processes/ranks have finished their forward reduction step. Each own M spatial ranks.
 
-        if self.temporal_rank == 0: # Solve for x0
+        if self.temporal_rank == 0: # Temporal rank 0 (with M spatial ranks) needs to solve for x0.
             local_pc = PETSc.PC().create(comm=self.ensemble.comm)
             local_pc.setType("lu")
-            local_pc.setFactorSolverType("mumps")
+            local_pc.setFactorSolverType("mumps") # cholesky also ok :)
             local_pc.setOperators(self.first_block)
             local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
             local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
@@ -196,34 +191,80 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F = local_pc.getFactorMatrix() # F is the factored matrix of A1
 
             x0 = self.first_rhs.duplicate()
-            F.solve(self.first_rhs, x0) # x0 is now solved for temporal rank 0, distributed overs its X spatial ranks.
+            F.solve(self.first_rhs, x0) # x0 is now solved for temporal rank 0, distributed overs its M spatial ranks.
 
             # We need to write x0 to the global RHS y. 
-            # bcast_field(step, u). step: window index of field to broadcast. u: fd.Function to place field into.
 
-            ranges = x0.getOwnershipRange()
+            ranges = x0.getOwnershipRange() # No. of values in x0 is less than or equal to the partition owned by temporal rank 0.
             ranges_global = x0.getOwnershipRanges()
-            PETSc.Sys.Print(f"ranges x : {ranges, ranges_global}", comm = COMM_SELF)
-            with y.global_vec() as yvec: # write to global array?
-                # yvec is <class 'petsc4py.PETSc.Vec'>
-                ranges_yvec = yvec.getOwnershipRange()
-                ranges_global_yvec = yvec.getOwnershipRanges()
-                PETSc.Sys.Print(f"ranges yvec: {ranges_yvec, ranges_global_yvec}", comm = COMM_SELF)
-                local_x0 = x0.getArray()
-                #local_x0 = np.zeros(len(yvec.array))
-                yvec.array[ranges[0]:ranges[1]] = local_x0[:]
-                #yvec.array[ranges[0]:ranges[1]] = local_x0
-                #PETSc.Sys.Print(f"Checking contents of y {yvec.array}",comm=COMM_SELF)
+            # PETSc.Sys.Print(f"Solving x0: This is temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
+            # PETSc.Sys.Print(f"x0 ownership range {ranges} and ownership ranges {ranges_global} \n", comm = COMM_SELF)
 
-   
+            # PETSc.Sys.Print(f"y._vec : {type(y._vec)}", comm = COMM_SELF) # this is <class 'petsc4py.PETSc.Vec'>
+            # PETSc.Sys.Print(f"y._fbuf : {type(y._fbuf)}", comm = COMM_SELF) # this is <class 'firedrake.function.Function'>
 
-            # PETSc.Sys.Print(f"x0 solved. ownership: {x0.getOwnershipRange()}",comm=COMM_SELF)
+
+        # with y.global_vec() as yvec: # Attempt to write to global array.
+        #     # yvec is <class 'petsc4py.PETSc.Vec'>
+            
+        #     #PETSc.Sys.Print(f"len(ranges) : {ranges[1]-ranges[0]}. len(local_x0): {len(local_x0)}",comm=COMM_SELF) # These dimensions match for each spatial rank M!
+        #     if self.temporal_rank == 0:
+        #         local_x0 = x0.getArray()
+        #         x_ranges = x0.getOwnershipRange()
+        #         y_ranges = yvec.getOwnershipRange()
+        #         PETSc.Sys.Print(f"yvec has ownership (local) {yvec.getOwnershipRange()} and the global is {yvec.getOwnershipRanges()}, on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
+        #         PETSc.Sys.Print(f"Custom range : {y_ranges[0],y_ranges[0] + len(local_x0)} on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
+        #         PETSc.Sys.Print(f"x0 has ownership : {x_ranges} and the global is {ranges_global}. x0 has length : {len(local_x0)} on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}\n", comm = COMM_SELF)
+        #         yvec.array[y_ranges[0] : y_ranges[0] + len(local_x0)] = local_x0[:] 
+        #     yvec.assemblyBegin()
+        #     yvec.assemblyEnd()
+
         with y.global_vec() as yvec:
-            PETSc.Sys.Print(f"Checking contents of y {yvec.view()}",comm=COMM_WORLD)
-            yvec.copy(yvec)
+            # Check if this rank owns x0
+            owns_x0 = self.temporal_rank == 0
+            x0_local = x0 if owns_x0 else yvec.duplicate()
+            if not owns_x0:
+                x0_local.setSizes(0)
+                x0_local.setUp()
+
+            # Ownership range
+            istart, iend = x0.getOwnershipRange() if owns_x0 else (0, 0)
+            nvals = iend - istart
+
+            # IS setup
+            if owns_x0 and nvals > 0:
+                x_idx = PETSc.IS().createStride(nvals, istart, 1, comm=x0.comm)
+                y_idx = PETSc.IS().createStride(nvals, istart, 1, comm=yvec.comm)
+            else:
+                x_idx = PETSc.IS().createGeneral([], comm=x0_local.comm)
+                y_idx = PETSc.IS().createGeneral([], comm=yvec.comm)
+
+            # Scatter creation and execution
+            scatter = PETSc.Scatter().create(x0_local, x_idx, yvec, y_idx)
+            scatter.begin(x0_local, yvec, addv=PETSc.InsertMode.INSERT_VALUES)
+            scatter.end(x0_local, yvec, addv=PETSc.InsertMode.INSERT_VALUES)
+
+            yvec.assemblyBegin()
+            yvec.assemblyEnd()
+
 
         COMM_WORLD.Barrier()
+        # with y.global_vec() as yvec:
+        #     PETSc.Sys.Print(f"Entering with -> yvec has ownership (local) {yvec.getOwnershipRange()} and (global) {yvec.getOwnershipRanges()} on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}\n", comm = COMM_SELF)
+        #     if self.temporal_rank == 0:
+        #         istart, iend = x0.getOwnershipRange()
+        #         local_x0 = x0.getArray()
+        #         indices = list(range(istart, iend))
+        #         yvec.setValues(indices, local_x0, addv=PETSc.InsertMode.INSERT_VALUES)
+
+        #     yvec.assemblyBegin()
+        #     yvec.assemblyEnd()
+
+            # TO DO: Do a solve for temporal rank 0 including x0. Send resulting x_i to temporal rank 1. 
+            # Do similar solve for temporal rank 1, send resulting x_j to temporal rank 2 etc. 
+
         
+        # PETSc.Sys.Print(f"Dir y {y._vec.view()}",comm=COMM_WORLD)
 
         # Begin all processes again
         # self.backward_solution() ...
