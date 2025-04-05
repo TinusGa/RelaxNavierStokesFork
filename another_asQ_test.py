@@ -1,7 +1,5 @@
 import faulthandler; faulthandler.enable()
-import os
 import numpy as np
-import pdb
 
 from firedrake import *
 from firedrake.petsc import PETSc
@@ -12,80 +10,53 @@ from asQ import (
     AllAtOnceSolver,
     LinearSolver,
 )
+from CyclicReduction.check_setup import check_setup, create_time_partition
 import time
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-# Print useful PETSc info
-PETSc.Sys.Print(f"Using Firedrake from: {os.getenv('VIRTUAL_ENV')}")
-PETSc.Sys.Print(f"Running with {COMM_WORLD.size} MPI processes")
-PETSc.Sys.Print(f"Memory check enabled: {'--with-debugging=yes' in PETSc.Sys.getVersion()}")
 
-# PETSc runtime options
+
 opts = PETSc.Options()
 opts.setValue("ksp_monitor_true_residual", "")
 opts.setValue("ksp_converged_reason", "")
-# opts.setValue("log_view", "")
-# opts.setValue("info", "")
-# opts.setValue("malloc_debug", 1)
 
-# Optional: uncomment to debug memory segfaults
-# import signal
-# def handler(signum, frame):
-#     print("Signal handler called with signal", signum)
-#     pdb.set_trace()
-# signal.signal(signal.SIGSEGV, handler)
+problem_parameters = {
+    "Number of time windows": 1, # No functionality for this yet
+    "Number of temporal processors": 4,
+    "Number of time steps": 9, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
+    "dt": 0.001,
+    "nx": 4,
+    "ny": 4,
+    "degree_space": 1,
+    "theta": 1,
+}
 
-time_partition = [9, 8, 8, 8] # Add one additional time step to the first partition for an (n+1) - setup. Rest of the partitions should be 2^k for som int k. 
+processors = COMM_WORLD.size
+n_timesteps = problem_parameters["Number of time steps"]
+temporal_processors = problem_parameters["Number of temporal processors"]
+nx = problem_parameters['nx']
+ny = problem_parameters['ny']
+dt = problem_parameters['dt']
+degree_space = problem_parameters['degree_space']
+theta = problem_parameters['theta']
+#check_setup(problem_parameters)
 
-time_partition = [3,2,2,2]
-
+# Create a time partition and an ensemble communicator
+time_partition = create_time_partition(n_timesteps-1, temporal_processors)
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
+
+# Create a mesh with nx+1 and ny+1 vertices
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-nx = 4
-ny = 4
-mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters=distribution_parameters, comm = ensemble.comm)
-
-processors = COMM_WORLD.size # total number of processors
-temporal_processors = len(time_partition) # number of temporal processors
-
-# The all-at-once matrix must be of block size (n+1)x(n+1) where n = p*2^k. p is the number of temporal processes. k is an integer.
-# If the spatial discretization has m DOF's, then all-at-once matrix should have total size (n+1)*m x (n+1)*m.
-
-N = 20 # This is useless per now
-dt = 0.001
-
+mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters = distribution_parameters, comm = ensemble.comm)
 n = FacetNormal(mesh)
 
-degree_space = 1
-
-# Expected dof's in space:
-space_dofs = (nx+1)*(ny+1)*degree_space
-PETSc.Sys.Print(f"DOF's space: {space_dofs}")
-# Expected dof's in time
-time_dofs = sum(time_partition)
-PETSc.Sys.Print(f"DOF's time: {time_dofs}")
-# Total
-total_dofs = time_dofs*space_dofs
-PETSc.Sys.Print(f"DOF's total: {total_dofs}")
-# dof's division per proc:
-dof_by_total_proc = total_dofs/processors
-dof_distribution = [int(dof_by_total_proc*i) for i in range(processors+1)] # Does not take into account overlapping dof's between procs
-PETSc.Sys.Print(f"DOF's distribution: {dof_distribution}")
-
-
 V = FunctionSpace(mesh, "CG", degree_space)
-
 x, y = SpatialCoordinate(V.mesh())
+
 u0 = Function(V)
 u0.project(sin(pi*x)*cos(2*pi*y))
-################################################
-
-aaofunc = AllAtOnceFunction(ensemble, time_partition, V)
-aaofunc.initial_condition.assign(u0)
-
-theta = 1
 
 bcs = [DirichletBC(V, 0, sub_domain=1)]
 
@@ -94,6 +65,9 @@ def form_mass(u, v):
 
 def form_function(u, v, t):
     return inner(grad(u), grad(v))*dx
+
+aaofunc = AllAtOnceFunction(ensemble, time_partition, V)
+aaofunc.initial_condition.assign(u0)
 
 aaoform = AllAtOnceForm(aaofunc, 
                         dt, 
@@ -107,7 +81,7 @@ solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'mpiaij',
     'ksp_type': 'richardson',
-    'ksp_max_it': 0,
+    'ksp_max_it': 1,
     #'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
@@ -131,7 +105,6 @@ solver_parameters = {
 # 'pc_python_type': 'asQ.CirculantPC',
 # 'circulant_block': {'pc_type': 'lu'},
 # 'circulant_alpha': 1e-4}
-
 
 # solver_parameters = {
 #     'snes_type': 'ksponly',
@@ -195,12 +168,24 @@ aaosolver = AllAtOnceSolver(aaoform,
 
 aaofunc.assign(u0)
 
-A,_ = aaosolver.snes.ksp.getOperators()
+# Some useful prints
+PETSc.Sys.Print(f"Running with {processors} MPI processes")
+PETSc.Sys.Print(f"Time partition: {time_partition}")
 
-PETSc.Sys.Print(f"Size A: {A.getSize(),A.getSizes()}")
-PETSc.Sys.Print(f"Ownership ranges: {A.getOwnershipRanges()}")
-PETSc.Sys.Print(f"View: {A.view()}")
-PETSc.Sys.Print(f"Type: {A.getVecType()}")
+A,_ = aaosolver.snes.ksp.getOperators()
+PETSc.Sys.Print(f"Size A: {A.getSize()}")
+PETSc.Sys.Print(f"Ownership ranges of A: {A.getOwnershipRanges()}")
+
+space_dofs = (nx+1)*(ny+1)*degree_space
+PETSc.Sys.Print(f"DOF's space: {space_dofs}")
+
+time_dofs = sum(time_partition)
+PETSc.Sys.Print(f"DOF's time: {time_dofs}")
+
+total_dofs = time_dofs*space_dofs
+PETSc.Sys.Print(f"DOF's total: {total_dofs}")
+
+PETSc.Sys.Print(f"")
 
 # Solves over windows. Each window is solved using space-time parallelism. 
 # Doing the loop over a single step should solve the entire system all-at-once.

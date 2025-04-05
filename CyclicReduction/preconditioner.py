@@ -108,7 +108,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             self.first_rhs = fd.as_backend_type(self._x[0].vector().copy()).vec()
             self.first_sol = fd.as_backend_type(self._y[0].vector().copy()).vec()
 
-            PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
+            #PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
 
             # PETSc.Sys.Print(f"first_block has size(s): {self.first_block.getSizes()}",comm=COMM_SELF)
             # PETSc.Sys.Print(f"first_rhs has size(s): {self.first_rhs.getSizes()}",comm=COMM_SELF)
