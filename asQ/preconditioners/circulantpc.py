@@ -409,5 +409,8 @@ class CirculantPC(AllAtOnceBlockPCBase):
         # Copy into xfi, xfr
 
         with y.global_vec_wo() as yvec:
+            # self.spatial_rank = self.ensemble.comm.rank
+            # self.temporal_rank = self.ensemble.ensemble_comm.rank
+            # PETSc.Sys.Print(f"yvec ownership : {yvec.getOwnershipRange()}. parray shape : {parray.shape}. Temporal rank: {self.temporal_rank}, Spatial rank: {self.spatial_rank}\n", comm=fd.COMM_SELF)
             yvec.array[:] = parray.reshape(-1).real
         ################

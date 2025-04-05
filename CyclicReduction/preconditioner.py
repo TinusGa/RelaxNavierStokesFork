@@ -102,11 +102,13 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             A = fd.assemble(F1, bcs=self.block_bcs)
 
-            A_petsc = fd.as_backend_type(A).mat()
+            A_petsc = fd.as_backend_type(A).mat().copy()
 
             self.first_block = A_petsc # Required for the intermediate step
-            self.first_rhs = fd.as_backend_type(self._x[0].vector()).vec()
-            self.first_sol = fd.as_backend_type(self._y[0].vector()).vec()
+            self.first_rhs = fd.as_backend_type(self._x[0].vector().copy()).vec()
+            self.first_sol = fd.as_backend_type(self._y[0].vector().copy()).vec()
+
+            PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
 
             # PETSc.Sys.Print(f"first_block has size(s): {self.first_block.getSizes()}",comm=COMM_SELF)
             # PETSc.Sys.Print(f"first_rhs has size(s): {self.first_rhs.getSizes()}",comm=COMM_SELF)
@@ -131,14 +133,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             A = fd.assemble(F1, bcs=self.block_bcs)
             B = fd.assemble(F2, bcs=self.block_bcs)
 
-            A_petsc = fd.as_backend_type(A).mat()
-            B_petsc = fd.as_backend_type(B).mat()
+            A_petsc = fd.as_backend_type(A).mat().copy()
+            B_petsc = fd.as_backend_type(B).mat().copy()
 
             self.diag_matrices.append(A_petsc)
             self.off_diag_matrices.append(B_petsc)
 
-            sol_vec = fd.as_backend_type(self._y[i].vector()).vec()
-            rhs_vec = fd.as_backend_type(self._x[i].vector()).vec()
+            sol_vec = fd.as_backend_type(self._y[i].vector().copy()).vec()
+            rhs_vec = fd.as_backend_type(self._x[i].vector().copy()).vec()
 
             self.cr_sol.append(sol_vec)
             self.cr_rhs.append(rhs_vec)
@@ -189,14 +191,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
             local_pc.setUp()
             F = local_pc.getFactorMatrix() # F is the factored matrix of A1
-
             x0 = self.first_rhs.duplicate()
+            #PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
             F.solve(self.first_rhs, x0) # x0 is now solved for temporal rank 0, distributed overs its M spatial ranks.
 
-            # We need to write x0 to the global RHS y. 
+        #     # We need to write x0 to the global RHS y. 
 
-            ranges = x0.getOwnershipRange() # No. of values in x0 is less than or equal to the partition owned by temporal rank 0.
-            ranges_global = x0.getOwnershipRanges()
+        #     ranges = x0.getOwnershipRange() # No. of values in x0 is less than or equal to the partition owned by temporal rank 0.
+        #     ranges_global = x0.getOwnershipRanges()
             # PETSc.Sys.Print(f"Solving x0: This is temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
             # PETSc.Sys.Print(f"x0 ownership range {ranges} and ownership ranges {ranges_global} \n", comm = COMM_SELF)
 
@@ -218,35 +220,22 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         #         yvec.array[y_ranges[0] : y_ranges[0] + len(local_x0)] = local_x0[:] 
         #     yvec.assemblyBegin()
         #     yvec.assemblyEnd()
+        y.zero()
+        with y.global_vec_wo() as yvec:
+            # Only the first temporal rank (0) will write to the global yvec.
+            if self.temporal_rank == 0:
+                # Check for compatible sizes
+                local_x0 = x0.getArray()
+                #PETSc.Sys.Print(f"x0 : {local_x0}", comm = COMM_SELF)   
+                size_local_x0 = local_x0.shape[0]
+                size_yvec = yvec.array.shape[0]
 
-        with y.global_vec() as yvec:
-            # Check if this rank owns x0
-            owns_x0 = self.temporal_rank == 0
-            x0_local = x0 if owns_x0 else yvec.duplicate()
-            if not owns_x0:
-                x0_local.setSizes(0)
-                x0_local.setUp()
-
-            # Ownership range
-            istart, iend = x0.getOwnershipRange() if owns_x0 else (0, 0)
-            nvals = iend - istart
-
-            # IS setup
-            if owns_x0 and nvals > 0:
-                x_idx = PETSc.IS().createStride(nvals, istart, 1, comm=x0.comm)
-                y_idx = PETSc.IS().createStride(nvals, istart, 1, comm=yvec.comm)
-            else:
-                x_idx = PETSc.IS().createGeneral([], comm=x0_local.comm)
-                y_idx = PETSc.IS().createGeneral([], comm=yvec.comm)
-
-            # Scatter creation and execution
-            scatter = PETSc.Scatter().create(x0_local, x_idx, yvec, y_idx)
-            scatter.begin(x0_local, yvec, addv=PETSc.InsertMode.INSERT_VALUES)
-            scatter.end(x0_local, yvec, addv=PETSc.InsertMode.INSERT_VALUES)
-
-            yvec.assemblyBegin()
-            yvec.assemblyEnd()
-
+                if size_local_x0 > size_yvec:
+                    raise ValueError(f"local_x0 has length {size_local_x0} but yvec has size {size_yvec}.")
+                
+                # Write the local part of x0 to the first entries of the local part of yvec owned by temporal rank 0.
+                y_start = yvec.getOwnershipRange()[0]
+                yvec.array[y_start:y_start+size_local_x0] = local_x0[:]
 
         COMM_WORLD.Barrier()
         # with y.global_vec() as yvec:
@@ -264,7 +253,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             # Do similar solve for temporal rank 1, send resulting x_j to temporal rank 2 etc. 
 
         
-        # PETSc.Sys.Print(f"Dir y {y._vec.view()}",comm=COMM_WORLD)
+        #PETSc.Sys.Print(f"View of y: {y._vec.view()}",comm=COMM_WORLD)
 
         # Begin all processes again
         # self.backward_solution() ...
@@ -369,7 +358,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 next_diag.append(new_B1)
                 next_off_diag.append(new_A1)
                 next_rhs.append(new_f1)
-                # next_sol.append(u2.duplicate())  # Placeholder for next solution
 
                 # === Destruction ===
                 A1.destroy()
@@ -385,8 +373,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             current_diag = next_diag
             current_off_diag = next_off_diag
             current_rhs = next_rhs
-            # current_sol = next_sol
             time_steps = time_steps//2
-        
-        # return current_off_diag[0], current_diag[0], current_sol[0], current_rhs[0], B_s, A_s, f_s
+
         return current_off_diag[0], current_diag[0], current_rhs[0], B_s, A_s, f_s

@@ -1,3 +1,8 @@
+import faulthandler; faulthandler.enable()
+import os
+import numpy as np
+import pdb
+
 from firedrake import *
 from firedrake.petsc import PETSc
 from asQ import (
@@ -11,10 +16,25 @@ import time
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-# opts = PETSc.Options()
+# Print useful PETSc info
+PETSc.Sys.Print(f"Using Firedrake from: {os.getenv('VIRTUAL_ENV')}")
+PETSc.Sys.Print(f"Running with {COMM_WORLD.size} MPI processes")
+PETSc.Sys.Print(f"Memory check enabled: {'--with-debugging=yes' in PETSc.Sys.getVersion()}")
+
+# PETSc runtime options
+opts = PETSc.Options()
+opts.setValue("ksp_monitor_true_residual", "")
+opts.setValue("ksp_converged_reason", "")
 # opts.setValue("log_view", "")
-# opts.setValue("malloc_debug", None)
-# opts.setValue("error_output_stdout", None)
+# opts.setValue("info", "")
+# opts.setValue("malloc_debug", 1)
+
+# Optional: uncomment to debug memory segfaults
+# import signal
+# def handler(signum, frame):
+#     print("Signal handler called with signal", signum)
+#     pdb.set_trace()
+# signal.signal(signal.SIGSEGV, handler)
 
 time_partition = [9, 8, 8, 8] # Add one additional time step to the first partition for an (n+1) - setup. Rest of the partitions should be 2^k for som int k. 
 
@@ -87,7 +107,8 @@ solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'mpiaij',
     'ksp_type': 'richardson',
-    'ksp_rtol': 1e-12,
+    'ksp_max_it': 0,
+    #'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
@@ -98,6 +119,19 @@ solver_parameters = {
     #'circulant_block': {'pc_type': 'lu'},
     #'circulant_alpha': 1e-4
 }
+
+# solver_parameters = {
+# 'snes_type': 'ksponly',
+# 'mat_type': 'matfree',
+# 'ksp_type': 'richardson',
+# 'ksp_rtol': 1e-12,
+# 'ksp_monitor': None,
+# 'ksp_converged_rate': None,
+# 'pc_type': 'python',
+# 'pc_python_type': 'asQ.CirculantPC',
+# 'circulant_block': {'pc_type': 'lu'},
+# 'circulant_alpha': 1e-4}
+
 
 # solver_parameters = {
 #     'snes_type': 'ksponly',
@@ -179,7 +213,6 @@ for i in range(1):
     aaofunc.assign(aaofunc.initial_condition)
 
 PETSc.Sys.Print(f"Global solve time: {time.time()-start}s")
-
 
 final_sol = aaosolver.aaofunc._vec.getArray() # aaosolver.aaofunc._vec.getArray() -> np.array() with final sol?
 PETSc.Sys.Print(f"{type(aaosolver.aaofunc._vec.getArray())}") 
