@@ -9,6 +9,7 @@ from asQ import (
     AllAtOnceForm,
     AllAtOnceSolver,
     LinearSolver,
+    SharedArray,
 )
 from CyclicReduction.check_setup import check_setup, create_time_partition
 import time
@@ -17,9 +18,9 @@ warnings.simplefilter("ignore", FutureWarning)
 
 
 
-opts = PETSc.Options()
-opts.setValue("ksp_monitor_true_residual", "")
-opts.setValue("ksp_converged_reason", "")
+# opts = PETSc.Options()
+# opts.setValue("ksp_monitor_true_residual", "")
+# opts.setValue("ksp_converged_reason", "")
 
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
@@ -56,9 +57,10 @@ V = FunctionSpace(mesh, "CG", degree_space)
 x, y = SpatialCoordinate(V.mesh())
 
 u0 = Function(V)
-u0.project(sin(pi*x)*cos(2*pi*y))
+u0.project(cos(pi*x)*cos(2*pi*y))
 
-bcs = [DirichletBC(V, 0, sub_domain=1)]
+# bcs = [DirichletBC(V, 0, sub_domain=1)]
+bcs = []
 
 def form_mass(u, v):
     return u*v*dx
@@ -170,22 +172,18 @@ aaofunc.assign(u0)
 
 # Some useful prints
 PETSc.Sys.Print(f"Running with {processors} MPI processes")
-PETSc.Sys.Print(f"Time partition: {time_partition}")
+PETSc.Sys.Print(f"Time partition: {time_partition}, total time steps: {n_timesteps}")
 
 A,_ = aaosolver.snes.ksp.getOperators()
-PETSc.Sys.Print(f"Size A: {A.getSize()}")
-PETSc.Sys.Print(f"Ownership ranges of A: {A.getOwnershipRanges()}")
+PETSc.Sys.Print(f"Size A: {A.getSize()}, with ownership ranges: {A.getOwnershipRanges()}")
+#PETSc.Sys.Print(f"Ownership ranges of A: {A.getOwnershipRanges()}") 
+#PETSc.Sys.Print(f"Ownership ranges col of A: {A.getOwnershipRangesColumn()}")
 
 space_dofs = (nx+1)*(ny+1)*degree_space
-PETSc.Sys.Print(f"DOF's space: {space_dofs}")
-
 time_dofs = sum(time_partition)
-PETSc.Sys.Print(f"DOF's time: {time_dofs}")
-
 total_dofs = time_dofs*space_dofs
-PETSc.Sys.Print(f"DOF's total: {total_dofs}")
-
-PETSc.Sys.Print(f"")
+PETSc.Sys.Print(f"DOF's space: {space_dofs}, DOF's time: {time_dofs}, DOF's total: {total_dofs} \n")
+# PETSc.Sys.Print(f"")
 
 # Solves over windows. Each window is solved using space-time parallelism. 
 # Doing the loop over a single step should solve the entire system all-at-once.
@@ -194,12 +192,45 @@ start = time.time()
 
 for i in range(1):
     aaosolver.solve()
-    aaofunc.bcast_field(-1, aaofunc.initial_condition)
-    aaofunc.assign(aaofunc.initial_condition)
+    # aaofunc.bcast_field(-1, aaofunc.initial_condition)
+    # aaofunc.assign(aaofunc.initial_condition)
 
 PETSc.Sys.Print(f"Global solve time: {time.time()-start}s")
 
-final_sol = aaosolver.aaofunc._vec.getArray() # aaosolver.aaofunc._vec.getArray() -> np.array() with final sol?
-PETSc.Sys.Print(f"{type(aaosolver.aaofunc._vec.getArray())}") 
+# final_sol = aaosolver.aaofunc._vec.getArray() # aaosolver.aaofunc._vec.getArray() -> np.array() with final sol?
+# PETSc.Sys.Print(f"{type(aaosolver.aaofunc._vec.getArray())}") 
 
+ # We find the L2-error at each timestep
+q_exact = Function(V)
+errors = SharedArray(time_partition, comm=ensemble.ensemble_comm)
+times = SharedArray(time_partition, comm=ensemble.ensemble_comm)
+def window_postproc():
+    total_dof = 0
+    for step in range(aaofunc.ntimesteps):
+        if aaoform.layout.is_local(step):
+            local_step = aaofunc.transform_index(step, from_range='window')
+            t = aaoform.time[local_step]
+            q_exact.interpolate(exp(-5*pi*t)*cos(pi*x)*cos(2*pi*y))
+            total_dof += q_exact.dof_dset.size
+            qp = aaofunc[local_step]
+            errors.dlocal[local_step] = errornorm(qp, q_exact)
+            times.dlocal[local_step] = t
+    errors.synchronise()
+    times.synchronise()
+    # for step in range(aaofunc.ntimesteps):
+    #     PETSc.Sys.Print(f"Time={times.dglobal[step]:.3f}, qerr={errors.dglobal[step]:.3f}")
+    nsteps = aaofunc.ntimesteps
+    # Format each entry to fixed width
+    col_width = 7 # Adjust as needed
+    time_row = "".join(f"{times.dglobal[i]:>{col_width}.3f}" for i in range(nsteps))
+    qerr_row = "".join(f"{errors.dglobal[i]:>{col_width}.3f}" for i in range(nsteps))
 
+    # Add labels
+    time_row = f"{'Times:':<7}" + time_row
+    qerr_row = f"{'Errors:':<7}" + qerr_row
+
+    # Print both rows
+    PETSc.Sys.Print(time_row)
+    PETSc.Sys.Print(qerr_row)
+    
+window_postproc()

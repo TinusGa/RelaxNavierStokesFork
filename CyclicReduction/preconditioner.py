@@ -36,11 +36,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         aaofunc = self.aaofunc
 
-        # all-at-once reference state
+        # All-at-once reference state
         self.state_func = aaofunc.copy()
 
-        # single timestep function space
-        field_function_space = aaofunc.field_function_space
+        # Function space for a single time-step
+        field_function_space = aaofunc.field_function_space 
+
+        # Function space for the slice of the all-at-once system on this process
+        function_space = aaofunc.function_space 
 
         # Building the nonlinear operator
         self.block_solvers = []
@@ -84,8 +87,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         #PETSc.Sys.Print(f"Inter MATRIX ownershs : {self.intermediate_matrix.getOwnershipRanges()}")
 
-        _, A = pc.getOperators()
-
+        A, _ = pc.getOperators()
+        # PETSc.Sys.Print(f"View of y: {y._vec.view()}",comm=COMM_WORLD)
+        PETSc.Sys.Print(f"Type aaofunc: {aaofunc[0]}",comm=COMM_WORLD)
         # Building the block problem solvers
         nlocal_timesteps_start = 0
 
@@ -139,8 +143,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             self.diag_matrices.append(A_petsc)
             self.off_diag_matrices.append(B_petsc)
 
-            sol_vec = fd.as_backend_type(self._y[i].vector().copy()).vec()
             rhs_vec = fd.as_backend_type(self._x[i].vector().copy()).vec()
+            sol_vec = fd.as_backend_type(self._y[i].vector().copy()).vec()
 
             self.cr_sol.append(sol_vec)
             self.cr_rhs.append(rhs_vec)
@@ -150,6 +154,10 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                                             dtype=int,
                                             comm=self.ensemble.ensemble_comm) # Not currently used for anything
         self.initialized = True
+
+
+
+
 
     
     @profiler()
@@ -223,6 +231,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         y.zero()
         with y.global_vec_wo() as yvec:
             # Only the first temporal rank (0) will write to the global yvec.
+            PETSc.Sys.Print(f"Ownership ranges of yvec : {yvec.getOwnershipRanges()}")
             if self.temporal_rank == 0:
                 # Check for compatible sizes
                 local_x0 = x0.getArray()
@@ -238,16 +247,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 yvec.array[y_start:y_start+size_local_x0] = local_x0[:]
 
         COMM_WORLD.Barrier()
-        # with y.global_vec() as yvec:
-        #     PETSc.Sys.Print(f"Entering with -> yvec has ownership (local) {yvec.getOwnershipRange()} and (global) {yvec.getOwnershipRanges()} on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}\n", comm = COMM_SELF)
-        #     if self.temporal_rank == 0:
-        #         istart, iend = x0.getOwnershipRange()
-        #         local_x0 = x0.getArray()
-        #         indices = list(range(istart, iend))
-        #         yvec.setValues(indices, local_x0, addv=PETSc.InsertMode.INSERT_VALUES)
-
-        #     yvec.assemblyBegin()
-        #     yvec.assemblyEnd()
+ 
 
             # TO DO: Do a solve for temporal rank 0 including x0. Send resulting x_i to temporal rank 1. 
             # Do similar solve for temporal rank 1, send resulting x_j to temporal rank 2 etc. 
