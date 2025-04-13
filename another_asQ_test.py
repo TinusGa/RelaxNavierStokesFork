@@ -16,8 +16,6 @@ import time
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
 
-
-
 # opts = PETSc.Options()
 # opts.setValue("ksp_monitor_true_residual", "")
 # opts.setValue("ksp_converged_reason", "")
@@ -51,6 +49,7 @@ ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 # Create a mesh with nx+1 and ny+1 vertices
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters = distribution_parameters, comm = ensemble.comm)
+# mesh = UnitSquareMesh(nx = nx, ny = ny, comm = ensemble.comm)
 n = FacetNormal(mesh)
 
 V = FunctionSpace(mesh, "CG", degree_space)
@@ -83,7 +82,7 @@ solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'mpiaij',
     'ksp_type': 'richardson',
-    'ksp_max_it': 1,
+    'ksp_max_it': 0,
     #'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
@@ -100,6 +99,7 @@ solver_parameters = {
 # 'snes_type': 'ksponly',
 # 'mat_type': 'matfree',
 # 'ksp_type': 'richardson',
+# 'ksp_max_it': 0,
 # 'ksp_rtol': 1e-12,
 # 'ksp_monitor': None,
 # 'ksp_converged_rate': None,
@@ -217,8 +217,6 @@ def window_postproc():
             times.dlocal[local_step] = t
     errors.synchronise()
     times.synchronise()
-    # for step in range(aaofunc.ntimesteps):
-    #     PETSc.Sys.Print(f"Time={times.dglobal[step]:.3f}, qerr={errors.dglobal[step]:.3f}")
     nsteps = aaofunc.ntimesteps
     # Format each entry to fixed width
     col_width = 7 # Adjust as needed

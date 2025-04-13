@@ -81,16 +81,15 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.temporal_rank = self.ensemble.ensemble_comm.rank
 
         #PETSc.Sys.Print(f"Temporal rank {self.temporal_rank} with spatial rank {self.spatial_rank}", comm = COMM_SELF)
-        spatial_block_size = field_function_space.dim()
-        mT = (self.ensemble.ensemble_comm.size + 1)*spatial_block_size
-        self.intermediate_matrix = PETSc.Mat().createAIJ(size=(mT,mT),comm=self.ensemble.ensemble_comm)
+        # spatial_block_size = field_function_space.dim()
+        # mT = (self.ensemble.ensemble_comm.size + 1)*spatial_block_size
+        # self.intermediate_matrix = PETSc.Mat().createAIJ(size=(mT,mT),comm=self.ensemble.ensemble_comm)
         
         #PETSc.Sys.Print(f"Inter MATRIX ownershs : {self.intermediate_matrix.getOwnershipRanges()}")
 
         A, _ = pc.getOperators()
-        # PETSc.Sys.Print(f"View of y: {y._vec.view()}",comm=COMM_WORLD)
-        PETSc.Sys.Print(f"Type aaofunc: {aaofunc[0]}",comm=COMM_WORLD)
-        # Building the block problem solvers
+        
+        # Pretty sure aaofunc[0] is the RHS of the first time-step of the global system
         nlocal_timesteps_start = 0
 
         if self.temporal_rank == 0:
@@ -109,8 +108,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             A_petsc = fd.as_backend_type(A).mat().copy()
 
             self.first_block = A_petsc # Required for the intermediate step
-            self.first_rhs = fd.as_backend_type(self._x[0].vector().copy()).vec()
+            self.first_rhs = aaofunc[0].dat._vec.copy()
+            # self.first_rhs = fd.as_backend_type(self._x[0].vector().copy()).vec()
             self.first_sol = fd.as_backend_type(self._y[0].vector().copy()).vec()
+
+                    
 
             #PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
 
@@ -156,10 +158,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.initialized = True
 
 
-
-
-
-    
     @profiler()
     def _record_diagnostics(self):
         pass
@@ -170,6 +168,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
+        y.zero()
         # x rhs, y sol
         # Applies the action of A * y = x, should return y = A^{-1} * x
 
@@ -200,82 +199,127 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             local_pc.setUp()
             F = local_pc.getFactorMatrix() # F is the factored matrix of A1
             x0 = self.first_rhs.duplicate()
-            #PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
             F.solve(self.first_rhs, x0) # x0 is now solved for temporal rank 0, distributed overs its M spatial ranks.
 
-        #     # We need to write x0 to the global RHS y. 
+        # The solution is a motherfucking PENCIL BITCH!
+        subcomm = Subcomm(self.ensemble.ensemble_comm, [0, 1])
+        nlocal = self.aaofunc.field_function_space.node_set.size # DOFs for this rank
+        NN = np.array([self.ntimesteps, nlocal], dtype=int)
 
-        #     ranges = x0.getOwnershipRange() # No. of values in x0 is less than or equal to the partition owned by temporal rank 0.
-        #     ranges_global = x0.getOwnershipRanges()
-            # PETSc.Sys.Print(f"Solving x0: This is temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
-            # PETSc.Sys.Print(f"x0 ownership range {ranges} and ownership ranges {ranges_global} \n", comm = COMM_SELF)
+        # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If patial rank 0, temporal rank 0
+        # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then
+        # p0.subshape = (3,10)
+        p0 = Pencil(subcomm, NN, axis=1)
+        a0 = np.zeros(p0.subshape,dtype=np.float64)
 
-            # PETSc.Sys.Print(f"y._vec : {type(y._vec)}", comm = COMM_SELF) # this is <class 'petsc4py.PETSc.Vec'>
-            # PETSc.Sys.Print(f"y._fbuf : {type(y._fbuf)}", comm = COMM_SELF) # this is <class 'firedrake.function.Function'>
+        # p1 : Redescribes p0 to a pencil over all timesteps.
+        # p1 = p0.pencil(0)
+        # a1 = np.zeros(p1.subshape,dtype=np.float64)
+        # transfer = p0.transfer(p1,dtype=np.float64)
 
-
-        # with y.global_vec() as yvec: # Attempt to write to global array.
-        #     # yvec is <class 'petsc4py.PETSc.Vec'>
+        if self.temporal_rank == 0:
+            local_x0 = x0.getArray()
+            a0[0,:] = local_x0[:]
             
-        #     #PETSc.Sys.Print(f"len(ranges) : {ranges[1]-ranges[0]}. len(local_x0): {len(local_x0)}",comm=COMM_SELF) # These dimensions match for each spatial rank M!
-        #     if self.temporal_rank == 0:
-        #         local_x0 = x0.getArray()
-        #         x_ranges = x0.getOwnershipRange()
-        #         y_ranges = yvec.getOwnershipRange()
-        #         PETSc.Sys.Print(f"yvec has ownership (local) {yvec.getOwnershipRange()} and the global is {yvec.getOwnershipRanges()}, on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
-        #         PETSc.Sys.Print(f"Custom range : {y_ranges[0],y_ranges[0] + len(local_x0)} on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}", comm = COMM_SELF)
-        #         PETSc.Sys.Print(f"x0 has ownership : {x_ranges} and the global is {ranges_global}. x0 has length : {len(local_x0)} on temporal rank {self.temporal_rank} and spatial rank {self.spatial_rank}\n", comm = COMM_SELF)
-        #         yvec.array[y_ranges[0] : y_ranges[0] + len(local_x0)] = local_x0[:] 
-        #     yvec.assemblyBegin()
-        #     yvec.assemblyEnd()
-        y.zero()
-        with y.global_vec_wo() as yvec:
-            # Only the first temporal rank (0) will write to the global yvec.
-            PETSc.Sys.Print(f"Ownership ranges of yvec : {yvec.getOwnershipRanges()}")
-            if self.temporal_rank == 0:
-                # Check for compatible sizes
-                local_x0 = x0.getArray()
-                #PETSc.Sys.Print(f"x0 : {local_x0}", comm = COMM_SELF)   
-                size_local_x0 = local_x0.shape[0]
-                size_yvec = yvec.array.shape[0]
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = a0.reshape(-1)[:]
+        
+        # Now we need to use x0 to solve for the rest of the system.
+        # B_s x0 + A_s x_? = f_s, want to solve for x_?
+        # Only temporal rank 0 owns x0. It will need to solve first.
+       
+        if self.temporal_rank == 0:
+            local_pc = PETSc.PC().create(comm=self.ensemble.comm)
+            local_pc.setType("lu") # can also do 'cholesky' here?
+            local_pc.setFactorSolverType("mumps")
+            local_pc.setOperators(A_k)
+            local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
+            local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
+            local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
+            local_pc.setUp()
+            F = local_pc.getFactorMatrix() # F is the factored matrix of A1
 
-                if size_local_x0 > size_yvec:
-                    raise ValueError(f"local_x0 has length {size_local_x0} but yvec has size {size_yvec}.")
-                
-                # Write the local part of x0 to the first entries of the local part of yvec owned by temporal rank 0.
-                y_start = yvec.getOwnershipRange()[0]
-                yvec.array[y_start:y_start+size_local_x0] = local_x0[:]
+            rhs = f_k.duplicate() 
+            f_k.scale(-1.0) # f_s <- -f_k
+            B_k.multAdd(rhs, x0, f_k) # rhs <- B_k * x0 + f_k
+            rhs.scale(-1.0) # rhs <- f_k - B_k * x0
 
-        COMM_WORLD.Barrier()
- 
+            new_x = f_k.duplicate()
+            F.solve(rhs, new_x) # new_x <- A_k^{-1} * (f_k - B_k * x0)
+        
+        # new_x must be sent to the next temporal rank to solve for that ranks new_x.
+        # This next rank does the same computation but uses new_x instead of x0. It computes it's own new_x and sends it to the next rank.
+        
+        spatial_comm = self.ensemble.comm
+        srank = spatial_comm.Get_rank()
+        spatial_size = spatial_comm.Get_size()
 
-            # TO DO: Do a solve for temporal rank 0 including x0. Send resulting x_i to temporal rank 1. 
-            # Do similar solve for temporal rank 1, send resulting x_j to temporal rank 2 etc. 
+        global_comm = self.ensemble.ensemble_comm
+        global_rank = global_comm.Get_rank()
+
+        n_temporal = global_comm.Get_size() // spatial_size
+        trank = self.temporal_rank
+
+        # Allocate buffers
+        if self.temporal_rank > 0:
+            # Receive x_prev from previous temporal rank
+            x_prev = f_k.duplicate()
+            source = self.temporal_rank - 1
+            self.ensemble.recv(x_prev.getArray(), source=source, tag=88)
+        else:
+            x_prev = new_x  # Already solved earlier by temporal rank 0
+
+        # Solve: x_k = A_k^{-1} (f_k - B_k * x_prev)
+        rhs = f_k.duplicate()
+        f_k.scale(-1.0)
+        B_k.multAdd(rhs, x_prev, f_k)  # f_k <- B_k * x_prev - f_k
+        rhs.scale(-1.0)
+
+        x_k = rhs.duplicate()
+        local_pc = PETSc.PC().create(comm=spatial_comm)
+        local_pc.setType("lu")
+        local_pc.setFactorSolverType("mumps")
+        local_pc.setOperators(A_k)
+        local_pc.setUp()
+        F = local_pc.getFactorMatrix()
+        F.solve(rhs, x_k)
+
+        # Optionally, store x_k into y (use pencil layout here)
+
+        # Send to next temporal rank
+        if trank < n_temporal - 1:
+            dest = (trank + 1) * spatial_size + srank
+            global_comm.Send(x_k.getArray(), dest=dest, tag=88)
 
         
+
         #PETSc.Sys.Print(f"View of y: {y._vec.view()}",comm=COMM_WORLD)
 
-        # Begin all processes again
-        # self.backward_solution() ...
+        # self._y.zero()
+        # with self._y.global_vec_wo() as yvec:
+        #     # Only the first temporal rank (0) will write to the global yvec.
+        #     PETSc.Sys.Print(f"Ownership ranges of yvec : {yvec.getOwnershipRanges()}")
+        #     if self.temporal_rank == 0:
+        #         # Check for compatible sizes
+        #         local_x0 = x0.getArray()
+        #         #PETSc.Sys.Print(f"x0 : {local_x0}", comm = COMM_SELF)   
+        #         size_local_x0 = local_x0.shape[0]
+        #         size_yvec = yvec.array.shape[0]
 
-        # ksp = PETSc.KSP().create()
-        # ksp.setOperators(self.first_block) # [A_0, ..., 0] [x_0] = [f_0 - B_0 i.c.]
-        # ksp.setOptionsPrefix(self.full_prefix + "cyclic_reduction_")
-        # ksp.setFromOptions()
-        # ksp.solve(f1,A1inv_f1)
+        #         if size_local_x0 > size_yvec:
+        #             raise ValueError(f"local_x0 has length {size_local_x0} but yvec has size {size_yvec}.")
+                
+        #         # Write the local part of x0 to the first entries of the local part of yvec owned by temporal rank 0.
+        #         y_start = yvec.getOwnershipRange()[0]
+        #         yvec.array[y_start:y_start+size_local_x0] = local_x0[:]
 
-        # First solve for x0 for first proc, send result to next proc. Solve on next proc, send to the one after. Repeat.
+        
+            # Only the first temporal rank (0) will write to the global yvec.
+       
+        #y.zero()
+        COMM_WORLD.Barrier()
 
-        # x = self._x, y = self._y : Types are AllAtOnceCofunction and AllAtOnceFunction respectively.
-
-        # with self._y[0].global_vec_wo() as yvec:
-        #     shape = yvec.array.shape
-        #     PETSc.Sys.Print(f"y's shape: {shape}", comm = COMM_SELF)
-        #     cus_array = np.ones(shape)*3
-        #     yvec.array[:] = cus_array
-
-        # for i in range(self.nlocal_timesteps):
-        #     self.block_solvers[i].solve()
+        
 
     @profiler()
     def forward_reduction(self,pc,x,y):

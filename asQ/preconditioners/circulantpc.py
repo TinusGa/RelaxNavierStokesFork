@@ -234,6 +234,7 @@ class CirculantPC(AllAtOnceBlockPCBase):
         # building the block problem solvers
         for i in range(self.nlocal_timesteps):
             ii = aaofunc.transform_index(i, from_range='slice', to_range='window')
+            #PETSc.Sys.Print(f"Block {i} of {self.nlocal_timesteps} with global index {ii}", comm=fd.COMM_SELF)
             d1 = self.D1[ii]
             d2 = self.D2[ii]
 
@@ -241,6 +242,10 @@ class CirculantPC(AllAtOnceBlockPCBase):
             K, D2r, D2i = cpx.derivative(d2, form_function, self.u0, return_z=True)
 
             A = M + K
+
+            #AA = fd.assemble(A).M.handle #.handle
+            #PETSc.Sys.Print(f"ownerships AA {AA.getOwnershipRange()} \n", comm=fd.COMM_SELF)
+            #PETSc.Sys.Print(f"ownership AA {AA.getOwnershipRanges()}", comm=fd.COMM_WORLD)
 
             # The rhs
             L = self.block_rhs
@@ -331,8 +336,10 @@ class CirculantPC(AllAtOnceBlockPCBase):
 
         # get array of basis coefficients
         with x.global_vec_ro() as xvec:
+            # PETSc.Sys.Print(f"Ownership range of xvec: {xvec.getOwnershipRange()}",comm=fd.COMM_SELF)
             parray = xvec.array_r.reshape((self.nlocal_timesteps,
                                            self.blockV.node_set.size))
+            # PETSc.Sys.Print(f"parray_shape: {parray.shape}",comm=fd.COMM_SELF)
         # This produces an array whose rows are time slices
         # and columns are finite element basis coefficients
 
@@ -381,6 +388,8 @@ class CirculantPC(AllAtOnceBlockPCBase):
                 cpx.get_real(self.block_sol, self.xfr[i])
                 cpx.get_imag(self.block_sol, self.xfi[i])
 
+
+
         ######################
         # Undiagonalise - Copy, transfer, IFFT, transfer, scale, copy
         # get array of basis coefficients
@@ -409,8 +418,8 @@ class CirculantPC(AllAtOnceBlockPCBase):
         # Copy into xfi, xfr
 
         with y.global_vec_wo() as yvec:
-            # self.spatial_rank = self.ensemble.comm.rank
-            # self.temporal_rank = self.ensemble.ensemble_comm.rank
-            # PETSc.Sys.Print(f"yvec ownership : {yvec.getOwnershipRange()}. parray shape : {parray.shape}. Temporal rank: {self.temporal_rank}, Spatial rank: {self.spatial_rank}\n", comm=fd.COMM_SELF)
+            self.spatial_rank = self.ensemble.comm.rank
+            self.temporal_rank = self.ensemble.ensemble_comm.rank
+            #PETSc.Sys.Print(f"yvec ownership : {yvec.getOwnershipRange()}. parray shape : {parray.reshape(-1).real.shape}. Temporal rank: {self.temporal_rank}, Spatial rank: {self.spatial_rank}\n", comm=fd.COMM_SELF)
             yvec.array[:] = parray.reshape(-1).real
         ################
