@@ -40,7 +40,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.state_func = aaofunc.copy()
 
         # Function space for a single time-step
-        field_function_space = aaofunc.field_function_space 
+        self.field_function_space = aaofunc.field_function_space 
 
         # Function space for the slice of the all-at-once system on this process
         function_space = aaofunc.function_space 
@@ -50,7 +50,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         # zero out bc dofs
         self.block_bcs = tuple(
-            fd.DirichletBC(field_function_space,
+            fd.DirichletBC(self.field_function_space,
                            0*bc.function_arg,
                            bc.sub_domain)
             for bc in self.aaoform.field_bcs)
@@ -95,8 +95,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         if self.temporal_rank == 0:
             t0 = self.time[0]
 
-            v = fd.TestFunction(field_function_space)
-            u = fd.TrialFunction(field_function_space)
+            v = fd.TestFunction(self.field_function_space)
+            u = fd.TrialFunction(self.field_function_space)
 
             M_mass = self.form_mass(u, v)
             K_stiff = self.form_function(u, v, t0)
@@ -127,8 +127,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             u0 = self.state_func[i]
             t0 = self.time[i]
 
-            v = fd.TestFunction(field_function_space)
-            u = fd.TrialFunction(field_function_space)
+            v = fd.TestFunction(self.field_function_space)
+            u = fd.TrialFunction(self.field_function_space)
 
             M_mass = self.form_mass(u, v)
             K_stiff = self.form_function(u, v, t0)
@@ -203,145 +203,118 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         # The solution is a motherfucking PENCIL BITCH!
         subcomm = Subcomm(self.ensemble.ensemble_comm, [0, 1])
-        nlocal = self.aaofunc.field_function_space.node_set.size # DOFs for this rank
+        nlocal = self.field_function_space.node_set.size # DOFs for this rank
         NN = np.array([self.ntimesteps, nlocal], dtype=int)
 
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If patial rank 0, temporal rank 0
         # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then
         # p0.subshape = (3,10)
-        p0 = Pencil(subcomm, NN, axis=1)
-        a0 = np.zeros(p0.subshape,dtype=np.float64)
+        self.p0 = Pencil(subcomm, NN, axis=1)
+        self.a0 = np.zeros(self.p0.subshape,dtype=np.float64)
 
         # p1 : Redescribes p0 to a pencil over all timesteps.
-        # p1 = p0.pencil(0)
+        # p1 = self.p0.pencil(0)
         # a1 = np.zeros(p1.subshape,dtype=np.float64)
-        # transfer = p0.transfer(p1,dtype=np.float64)
+        # transfer = self.p0.transfer(p1,dtype=np.float64)
 
         if self.temporal_rank == 0:
             local_x0 = x0.getArray()
-            a0[0,:] = local_x0[:]
+            self.a0[0,:] = local_x0[:]
             
             with y.global_vec_wo() as yvec:
-                yvec.array[:] = a0.reshape(-1)[:]
+                yvec.array[:] = self.a0.reshape(-1)[:]
         
-        # Now we need to use x0 to solve for the rest of the system.
-        # B_s x0 + A_s x_? = f_s, want to solve for x_?
-        # Only temporal rank 0 owns x0. It will need to solve first.
-       
-        if self.temporal_rank == 0:
-            local_pc = PETSc.PC().create(comm=self.ensemble.comm)
-            local_pc.setType("lu") # can also do 'cholesky' here?
-            local_pc.setFactorSolverType("mumps")
-            local_pc.setOperators(A_k)
-            local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
-            local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
-            local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
-            local_pc.setUp()
-            F = local_pc.getFactorMatrix() # F is the factored matrix of A1
-
-            rhs = f_k.duplicate() 
-            f_k.scale(-1.0) # f_s <- -f_k
-            B_k.multAdd(rhs, x0, f_k) # rhs <- B_k * x0 + f_k
-            rhs.scale(-1.0) # rhs <- f_k - B_k * x0
-
-            new_x = f_k.duplicate()
-            F.solve(rhs, new_x) # new_x <- A_k^{-1} * (f_k - B_k * x0)
-        
-        # new_x must be sent to the next temporal rank to solve for that ranks new_x.
-        # This next rank does the same computation but uses new_x instead of x0. It computes it's own new_x and sends it to the next rank.
-        
-        spatial_comm = self.ensemble.comm
-        srank = spatial_comm.Get_rank()
-        spatial_size = spatial_comm.Get_size()
-
-        global_comm = self.ensemble.ensemble_comm
-        global_rank = global_comm.Get_rank()
-
-        n_temporal = global_comm.Get_size() // spatial_size
-        trank = self.temporal_rank
+        PETSc.Sys.Print(f"Rank {self.temporal_rank, self.spatial_rank} a0.shape : {self.a0.shape}", comm=COMM_SELF)
+        n_temporal = self.ensemble.ensemble_comm.size
 
         # Allocate buffers
         if self.temporal_rank > 0:
             # Receive x_prev from previous temporal rank
-            x_prev = f_k.duplicate()
+            x_prev_function = fd.Function(self.field_function_space)
             source = self.temporal_rank - 1
-            self.ensemble.recv(x_prev.getArray(), source=source, tag=88)
+            self.ensemble.recv(x_prev_function, source=source, tag=88)
+            # Convert x_prev_function to a PETSc Vec
+            with x_prev_function.dat.vec as v:
+                x_prev = v.copy()
         else:
-            x_prev = new_x  # Already solved earlier by temporal rank 0
+            x_prev = x0 
 
-        # Solve: x_k = A_k^{-1} (f_k - B_k * x_prev)
+        # Solve: x_next = A_k^{-1} (f_k - B_k * x_prev)
         rhs = f_k.duplicate()
         f_k.scale(-1.0)
-        B_k.multAdd(rhs, x_prev, f_k)  # f_k <- B_k * x_prev - f_k
-        rhs.scale(-1.0)
+        B_k.multAdd(x_prev, f_k, rhs)  # f_k <- B_k * x_prev - f_k
+        rhs.scale(-1.0) # rhs <- f_k - B_k * x_prev
 
-        x_k = rhs.duplicate()
-        local_pc = PETSc.PC().create(comm=spatial_comm)
-        local_pc.setType("lu")
+        x_next = rhs.duplicate()
+        local_pc = PETSc.PC().create(comm=self.ensemble.comm)
+        local_pc.setType("lu") # can also do 'cholesky' here?
         local_pc.setFactorSolverType("mumps")
         local_pc.setOperators(A_k)
+        local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
+        local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
+        local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
         local_pc.setUp()
         F = local_pc.getFactorMatrix()
-        F.solve(rhs, x_k)
-
-        # Optionally, store x_k into y (use pencil layout here)
+        F.solve(rhs, x_next)
 
         # Send to next temporal rank
-        if trank < n_temporal - 1:
-            dest = (trank + 1) * spatial_size + srank
-            global_comm.Send(x_k.getArray(), dest=dest, tag=88)
-
+        if self.temporal_rank < n_temporal - 1:
+            dest = self.temporal_rank + 1
+            # Convert x_next to a Firedrake Function
+            x_next_function = fd.Function(self.field_function_space)
+            with x_next_function.dat.vec as v:
+                x_next.copy(v) # Copies data from x_next to v
+            self.ensemble.send(x_next_function, dest=dest, tag=88)
         
+        # All ranks now own a x_prev and x_next
+        # Now we need to do the backward reduction step
+        self.back_substitution(pc, x_prev, x_next, B_s, A_s, f_s)
 
-        #PETSc.Sys.Print(f"View of y: {y._vec.view()}",comm=COMM_WORLD)
+    @profiler()
+    def back_substitution(self, pc, x_prev, x_next, B_s, A_s, f_s):
+        # length of B_s, A_s, f_s should be equal to the number of levels of reduction
+        substitution_steps = len(B_s)
+        # We need to go backwards through the levels of reduction
+        # B_s, A_s, f_s are lists of lists of matrices/vectors
+        # B_s[i] is a list of matrices for the i-th level of reduction etc.
+        x_s = []
+        x_s.append(x_prev.copy())
+        for i in range(substitution_steps-1,-1,-1):
+            for B, A, f in zip(B_s[i], A_s[i], f_s[i]):
+                # Do something
+                pass
 
-        # self._y.zero()
-        # with self._y.global_vec_wo() as yvec:
-        #     # Only the first temporal rank (0) will write to the global yvec.
-        #     PETSc.Sys.Print(f"Ownership ranges of yvec : {yvec.getOwnershipRanges()}")
-        #     if self.temporal_rank == 0:
-        #         # Check for compatible sizes
-        #         local_x0 = x0.getArray()
-        #         #PETSc.Sys.Print(f"x0 : {local_x0}", comm = COMM_SELF)   
-        #         size_local_x0 = local_x0.shape[0]
-        #         size_yvec = yvec.array.shape[0]
+        pass
 
-        #         if size_local_x0 > size_yvec:
-        #             raise ValueError(f"local_x0 has length {size_local_x0} but yvec has size {size_yvec}.")
-                
-        #         # Write the local part of x0 to the first entries of the local part of yvec owned by temporal rank 0.
-        #         y_start = yvec.getOwnershipRange()[0]
-        #         yvec.array[y_start:y_start+size_local_x0] = local_x0[:]
-
-        
-            # Only the first temporal rank (0) will write to the global yvec.
-       
-        #y.zero()
-        COMM_WORLD.Barrier()
 
         
 
     @profiler()
     def forward_reduction(self,pc,x,y):
 
-        B_s = []
-        A_s = []
-        f_s = []
+        B_s = [] # This should be list of lists of matrices, i.e. [[B1,B3,B7],[B2,B6],[B4]] 
+        A_s = [] # This should be list of lists of matrices, i.e. [[A1,A3,A7],[A2,A6],[A4]]
+        f_s = [] # This should be list of lists of vectors, i.e. [[f1,f3,f7],[f2,f6],[f4]]
         
         time_steps = self.nlocal_timesteps
         if self.temporal_rank == 0:
             time_steps -= 1
+        
+        steps_of_reduction = int(np.log2(time_steps))
+
         current_diag = self.diag_matrices.copy()
         current_off_diag = self.off_diag_matrices.copy()
         current_rhs = self.cr_rhs.copy()
-        # current_sol = self.cr_sol.copy()
 
         while time_steps != 1:
 
             next_diag = []
             next_off_diag = []
             next_rhs = []
-            # next_sol = []
+            
+            B_s_temp = [] 
+            A_s_temp = []
+            f_s_temp = []
 
             for i in range(0,time_steps,2): # Step twice at a time
                 A1 = current_diag[i]
@@ -350,16 +323,13 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 B1 = current_off_diag[i]
                 B2 = current_off_diag[i+1]
 
-                # u1 = current_sol[i]
-                # u2 = current_sol[i+1]
-
                 f1 = current_rhs[i]
                 f2 = current_rhs[i+1]
 
                 # === Store for backward step (maybe add as self. variables) ===
-                B_s.append(B1.copy())
-                A_s.append(A1.copy())
-                f_s.append(f1.copy())
+                B_s_temp.append(B1.copy())
+                A_s_temp.append(A1.copy())
+                f_s_temp.append(f1.copy())
 
                 # === Factor A1 ===
                 #A1_dense = A1.convert('dense')
@@ -418,5 +388,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             current_off_diag = next_off_diag
             current_rhs = next_rhs
             time_steps = time_steps//2
+
+            B_s.append(B_s_temp)
+            A_s.append(A_s_temp)
+            f_s.append(f_s_temp)
 
         return current_off_diag[0], current_diag[0], current_rhs[0], B_s, A_s, f_s
