@@ -45,7 +45,6 @@ theta = problem_parameters['theta']
 time_partition = create_time_partition(n_timesteps-1, temporal_processors)
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
-
 # Create a mesh with nx+1 and ny+1 vertices
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
 mesh = UnitSquareMesh(nx = nx, ny = ny, distribution_parameters = distribution_parameters, comm = ensemble.comm)

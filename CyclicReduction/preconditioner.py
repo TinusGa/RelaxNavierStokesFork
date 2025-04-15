@@ -28,10 +28,15 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         aaofunc = self.aaofunc
 
+        self.initial_condition = aaofunc.initial_condition.copy()
+        PETSc.Sys.Print(f"Type of initial_condition : {type(self.initial_condition)}")
+
+        #PETSc.Sys.Print(f"View of aaofunc {aaofunc._vec.view()}")
+
         # All-at-once reference state
         self.state_func = aaofunc.copy()
 
-        # Function space for a single time-step
+        # Function space for a single time-step for this rank
         self.field_function_space = aaofunc.field_function_space 
 
         # Function space for the slice of the all-at-once system on this process
@@ -96,11 +101,21 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F1 = dt1 * M_mass + tht * K_stiff # Main diagonal block system
 
             A = fd.assemble(F1, bcs=self.block_bcs)
+            B = fd.assemble(dt1*M_mass, bcs=self.block_bcs)
 
             A_petsc = fd.as_backend_type(A).mat().copy()
 
             self.first_block = A_petsc # Required for the intermediate step
-            self.first_rhs = aaofunc[0].dat._vec.copy()
+            
+            RHS_mat = fd.as_backend_type(B).mat().copy()
+            RHS_vec = fd.as_backend_type(self.initial_condition.vector().copy()).vec()
+
+            RHS = RHS_vec.duplicate()
+            RHS_mat.mult(RHS_vec, RHS) # RHS = B * initial_condition
+            #PETSc.Sys.Print(f"RHS view : {RHS.view()}",comm=fd.COMM_SELF)
+            
+            self.first_rhs = RHS.copy() # This is the RHS of the first block system
+            #self.first_rhs = aaofunc[0].dat._vec.copy()
             # self.first_rhs = fd.as_backend_type(self._x[0].vector().copy()).vec()
             self.first_sol = fd.as_backend_type(self._y[0].vector().copy()).vec()
 
@@ -161,6 +176,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
     @profiler()
     def apply_impl(self, pc, x, y):
         y.zero()
+
+        #PETSc.Sys.Print(f"View of x {x._vec.view()}", comm=fd.COMM_WORLD)
         # x rhs, y sol
         # Applies the action of A * y = x, should return y = A^{-1} * x
 
@@ -216,7 +233,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
         
-        PETSc.Sys.Print(f"Rank {self.temporal_rank, self.spatial_rank} a0.shape : {self.a0.shape}", comm=fd.COMM_SELF)
+        #PETSc.Sys.Print(f"Rank {self.temporal_rank, self.spatial_rank} a0.shape : {self.a0.shape}", comm=fd.COMM_SELF)
         n_temporal = self.ensemble.ensemble_comm.size
 
         # Allocate buffers
@@ -267,7 +284,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # with y.global_vec_wo() as yvec:
         #     yvec.array[:] = self.a0.reshape(-1)[:]
         
-        PETSc.Sys.Print(f"view y {y._vec.view()}")
+        # PETSc.Sys.Print(f"view y {y._vec.view()}")
 
 
     @profiler()
