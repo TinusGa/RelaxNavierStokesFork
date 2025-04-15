@@ -2,7 +2,6 @@ from firedrake import *
 from firedrake.petsc import PETSc
 
 
-
 # The time partition must be of size (n+1) where n = p*2^k. p is the number of temporal processes. k is an integer.
 def create_time_partition(n, p) -> list:
     """

@@ -1,27 +1,19 @@
+import numpy as np
+
 import firedrake as fd
 from firedrake.petsc import PETSc
-from firedrake import COMM_SELF, COMM_WORLD
-
-import time
-
-from warnings import warn
-import numpy as np
-from scipy.fft import fft, ifft
 
 from asQ.pencil import Pencil, Subcomm
 from asQ.profiling import profiler
-from asQ.common import get_option_from_list, get_deprecated_option
-
-from asQ.allatonce.function import time_average as time_average_function
 from asQ.preconditioners.base import AllAtOnceBlockPCBase, get_default_options, AllAtOncePCBase
-
-from asQ.ensemble import split_ensemble
-
 from asQ.parallel_arrays import SharedArray
 
-from functools import partial
+from CyclicReduction.utils import (
+    back_substitution_indices
+)
 
 __all__ = ['CyclicReductionPC']
+
 
 class CyclicReductionPC(AllAtOnceBlockPCBase):
 
@@ -31,7 +23,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def initialize(self,pc):
-        # Initialize is called once per MPI processors
+        # Initialize is called once per rank
         super().initialize(pc, final_initialize=False)
 
         aaofunc = self.aaofunc
@@ -224,7 +216,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
         
-        PETSc.Sys.Print(f"Rank {self.temporal_rank, self.spatial_rank} a0.shape : {self.a0.shape}", comm=COMM_SELF)
+        PETSc.Sys.Print(f"Rank {self.temporal_rank, self.spatial_rank} a0.shape : {self.a0.shape}", comm=fd.COMM_SELF)
         n_temporal = self.ensemble.ensemble_comm.size
 
         # Allocate buffers
@@ -268,23 +260,63 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         # All ranks now own a x_prev and x_next
         # Now we need to do the backward reduction step
-        self.back_substitution(pc, x_prev, x_next, B_s, A_s, f_s)
+        self.back_substitution(pc, y, x_prev, x_next, B_s, A_s, f_s)
+
+        # local_x = x_prev.getArray()
+        # self.a0[1,:] = local_x[:]
+        # with y.global_vec_wo() as yvec:
+        #     yvec.array[:] = self.a0.reshape(-1)[:]
+        
+        PETSc.Sys.Print(f"view y {y._vec.view()}")
+
 
     @profiler()
-    def back_substitution(self, pc, x_prev, x_next, B_s, A_s, f_s):
+    def back_substitution(self, pc, y, x_prev, x_next, B_s, A_s, f_s):
         # length of B_s, A_s, f_s should be equal to the number of levels of reduction
         substitution_steps = len(B_s)
+
+        offset = 1 if self.temporal_rank == 0 else 0 # Temporal rank 0 is offset from other ranks by 1
+        idxs = back_substitution_indices(substitution_steps,offset=offset) # Tells self.a0 where to put the data
+
+        # First time step (except x0) for each temporal rank is x_prev and is already computed. Write to global array y
+        self.a0[offset,:] = x_prev.getArray()[:]
+        with y.global_vec_wo() as yvec:
+            yvec.array[:] = self.a0.reshape(-1)[:]
+
         # We need to go backwards through the levels of reduction
         # B_s, A_s, f_s are lists of lists of matrices/vectors
-        # B_s[i] is a list of matrices for the i-th level of reduction etc.
-        x_s = []
-        x_s.append(x_prev.copy())
+        # B_s[i] is a list of the lower matrices for the i-th level of reduction etc.
+        x_s = [x_prev.copy()]
         for i in range(substitution_steps-1,-1,-1):
-            for B, A, f in zip(B_s[i], A_s[i], f_s[i]):
+            new_xs = []
+            for j, (B, A, f, idx) in enumerate(zip(B_s[i], A_s[i], f_s[i], idxs[i])):
                 # Do something
-                pass
+                # B*x_before + A*x_after = f
+                # Solve: x[j+1] = A^{-1} (f - B * x[j])
+                rhs = f.duplicate()
+                f.scale(-1.0)
+                B.multAdd(x_s[j], f, rhs)  # f_k <- B_k * x_prev - f_k
+                rhs.scale(-1.0) # rhs <- f_k - B_k * x_prev
 
-        pass
+                x_new = f.duplicate()
+                local_pc = PETSc.PC().create(comm=self.ensemble.comm)
+                local_pc.setType("lu") # can also do 'cholesky' here?
+                local_pc.setFactorSolverType("mumps")
+                local_pc.setOperators(A)
+                local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
+                local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
+                local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
+                local_pc.setUp()
+                F = local_pc.getFactorMatrix()
+                F.solve(rhs, x_new)
+
+                self.a0[idx,:] = x_new.getArray()[:]
+                with y.global_vec_wo() as yvec:
+                    yvec.array[:] = self.a0.reshape(-1)[:]
+                new_xs.append(x_new.copy())
+
+            x_s = [elem for pair in zip(x_s, new_xs) for elem in pair]
+        
 
 
         
