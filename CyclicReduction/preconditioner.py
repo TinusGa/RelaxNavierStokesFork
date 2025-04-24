@@ -5,12 +5,10 @@ from firedrake.petsc import PETSc
 
 from asQ.pencil import Pencil, Subcomm
 from asQ.profiling import profiler
-from asQ.preconditioners.base import AllAtOnceBlockPCBase, get_default_options, AllAtOncePCBase
+from asQ.preconditioners.base import AllAtOnceBlockPCBase
 from asQ.parallel_arrays import SharedArray
+from asQ.allatonce import time_average
 
-from CyclicReduction.utils import (
-    back_substitution_indices
-)
 
 __all__ = ['CyclicReductionPC']
 
@@ -19,145 +17,71 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     prefix = 'cyclic_reduction_'
     valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
-    default_theta = 1 # Backward Euler
 
     @profiler()
     def initialize(self,pc):
         # Initialize is called once per rank
         super().initialize(pc, final_initialize=False)
 
-        aaofunc = self.aaofunc
-
-        self.initial_condition = aaofunc.initial_condition.copy()
-        PETSc.Sys.Print(f"Type of initial_condition : {type(self.initial_condition)}")
-
-        #PETSc.Sys.Print(f"View of aaofunc {aaofunc._vec.view()}")
-
         # All-at-once reference state
-        self.state_func = aaofunc.copy()
+        self.state_func = self.aaofunc.copy()
+        self.field_function_space = self.aaofunc.field_function_space
 
-        # Function space for a single time-step for this rank
-        self.field_function_space = aaofunc.field_function_space 
+        self.spatial_rank = self.ensemble.comm.rank
+        self.temporal_rank = self.ensemble.ensemble_comm.rank
 
-        # Function space for the slice of the all-at-once system on this process
-        function_space = aaofunc.function_space 
-
-        # Building the nonlinear operator
-        self.block_solvers = []
-
-        # zero out bc dofs
+        # Zero out bc dofs
         self.block_bcs = tuple(
             fd.DirichletBC(self.field_function_space,
                            0*bc.function_arg,
                            bc.sub_domain)
             for bc in self.aaoform.field_bcs)
 
-        # user appctx for the blocks
-        block_appctx = self.appctx.get('block_appctx', {})
-
-        dt1 = fd.Constant(1/self.dt)
-        tht = fd.Constant(self.theta)
-        tht = fd.Constant(1)
-
-        # Block i has prefix 'aaojacobi_block_{i}', but we want to be able
-        # to set default options for all blocks using 'aaojacobi_block'.
-        # LinearVariationalSolver will prioritise options it thinks are from
-        # the command line (including those in the `inserted_options` database
-        # of the AllAtOnceSolver) over the ones passed to __init__, so we pull
-        # the default options off the global dict and pass these explicitly to LVS.
-        default_block_prefix = f"{self.full_prefix}block_"
-        default_block_options = get_default_options(
-            default_block_prefix, range(self.ntimesteps))
         
         self.diag_matrices = []
-        self.off_diag_matrices = []
-        self.cr_rhs = []
-        self.cr_sol = []
+        self.lower_diag_matrices = []
+        self.rhs = []
 
-        self.spatial_rank = self.ensemble.comm.rank
-        self.temporal_rank = self.ensemble.ensemble_comm.rank
+        derivate = False
+        dt1 = fd.Constant(1/self.dt)
+        theta = fd.Constant(1)
 
-        #PETSc.Sys.Print(f"Temporal rank {self.temporal_rank} with spatial rank {self.spatial_rank}", comm = COMM_SELF)
-        # spatial_block_size = field_function_space.dim()
-        # mT = (self.ensemble.ensemble_comm.size + 1)*spatial_block_size
-        # self.intermediate_matrix = PETSc.Mat().createAIJ(size=(mT,mT),comm=self.ensemble.ensemble_comm)
-        
-        #PETSc.Sys.Print(f"Inter MATRIX ownershs : {self.intermediate_matrix.getOwnershipRanges()}")
-
-        A, _ = pc.getOperators()
-        
-        # Pretty sure aaofunc[0] is the RHS of the first time-step of the global system
-        nlocal_timesteps_start = 0
-
-        if self.temporal_rank == 0:
-            t0 = self.time[0]
-
-            v = fd.TestFunction(self.field_function_space)
-            u = fd.TrialFunction(self.field_function_space)
-
-            M_mass = self.form_mass(u, v)
-            K_stiff = self.form_function(u, v, t0)
-
-            F1 = dt1 * M_mass + tht * K_stiff # Main diagonal block system
-
-            A = fd.assemble(F1, bcs=self.block_bcs)
-            B = fd.assemble(dt1*M_mass, bcs=self.block_bcs)
-
-            A_petsc = fd.as_backend_type(A).mat().copy()
-
-            self.first_block = A_petsc # Required for the intermediate step
-            
-            RHS_mat = fd.as_backend_type(B).mat().copy()
-            RHS_vec = fd.as_backend_type(self.initial_condition.vector().copy()).vec()
-
-            RHS = RHS_vec.duplicate()
-            RHS_mat.mult(RHS_vec, RHS) # RHS = B * initial_condition
-            #PETSc.Sys.Print(f"RHS view : {RHS.view()}",comm=fd.COMM_SELF)
-            
-            self.first_rhs = RHS.copy() # This is the RHS of the first block system
-            #self.first_rhs = aaofunc[0].dat._vec.copy()
-            # self.first_rhs = fd.as_backend_type(self._x[0].vector().copy()).vec()
-            self.first_sol = fd.as_backend_type(self._y[0].vector().copy()).vec()
-
-                    
-
-            #PETSc.Sys.Print(f"view self.first_rhs : {self.first_rhs.view()}",comm=COMM_SELF)
-
-            # PETSc.Sys.Print(f"first_block has size(s): {self.first_block.getSizes()}",comm=COMM_SELF)
-            # PETSc.Sys.Print(f"first_rhs has size(s): {self.first_rhs.getSizes()}",comm=COMM_SELF)
-            # PETSc.Sys.Print(f"first_sol has size(s): {self.first_rhs.getSizes()}",comm=COMM_SELF)
-
-            nlocal_timesteps_start = 1
-
-        for i in range(nlocal_timesteps_start, self.nlocal_timesteps):
-            # the reference states
+        for i in range(self.nlocal_timesteps):
+            # The reference states
             u0 = self.state_func[i]
             t0 = self.time[i]
 
-            v = fd.TestFunction(self.field_function_space)
-            u = fd.TrialFunction(self.field_function_space)
+            if derivate:
+                vs = fd.TestFunctions(self.field_function_space)
+                us = fd.split(u0)
 
-            M_mass = self.form_mass(u, v)
-            K_stiff = self.form_function(u, v, t0)
+                M = self.form_mass(*us, *vs)
+                K = self.form_function(*us, *vs, t0)
 
-            F1 = dt1 * M_mass + tht * K_stiff # Main diagonal block system
-            F2 = -dt1 * M_mass # Lower/off - diagonal block system
+                F1 = dt1*M + theta*K # Main diagonal block system
+                F2 = -dt1*M # Lower/off - diagonal block system
 
-            A = fd.assemble(F1, bcs=self.block_bcs)
-            B = fd.assemble(F2, bcs=self.block_bcs)
+                F1 = fd.derivative(F1, u0)
+                F2 = fd.derivative(F2, u0)
 
-            A_petsc = fd.as_backend_type(A).mat().copy()
-            B_petsc = fd.as_backend_type(B).mat().copy()
+            else:
+                v = fd.TestFunction(self.field_function_space)
+                u = fd.TrialFunction(self.field_function_space)
 
-            self.diag_matrices.append(A_petsc)
-            self.off_diag_matrices.append(B_petsc)
+                M = self.form_mass(u, v)
+                K = self.form_function(u, v, t0)
 
-            rhs_vec = fd.as_backend_type(self._x[i].vector().copy()).vec()
-            sol_vec = fd.as_backend_type(self._y[i].vector().copy()).vec()
+                F1 = dt1*M + theta*K # Main diagonal block system
+                F2 = -dt1*M # Lower/off - diagonal block system
 
-            self.cr_sol.append(sol_vec)
-            self.cr_rhs.append(rhs_vec)
+            # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
+            D = fd.assemble(F1, bcs=self.block_bcs).petscmat
+            L = fd.assemble(F2, bcs=self.block_bcs).petscmat
+            f = u0.dat._vec.copy()
 
+            self.diag_matrices.append(D)
+            self.lower_diag_matrices.append(L)
+            self.rhs.append(f)
 
         self.block_iterations = SharedArray(self.time_partition,
                                             dtype=int,
@@ -175,65 +99,47 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
+        
         y.zero()
 
-        #PETSc.Sys.Print(f"View of x {x._vec.view()}", comm=fd.COMM_WORLD)
-        # x rhs, y sol
-        # Applies the action of A * y = x, should return y = A^{-1} * x
+        # Store these before the reduction step as self.diag_matrices and self.rhs are modified
+        # during the reduction step.
+        if self.temporal_rank == 0:
+            first_block = self.diag_matrices[0].copy()
+            first_rhs = self.rhs[0].copy()
 
-        # x and y are already the rhs and solution of the blocks
-        # with x.global_vec_ro() as xvec:
-        #     x_vec = xvec
-        #     #PETSc.Sys.Print(f"Type x_vec : {type(x_vec)}") # <class 'petsc4py.PETSc.Vec'>
-        #     #PETSc.Sys.Print(f"Type x_vec.array : {type(x_vec.array)}") # <class 'numpy.ndarray'>
-        
-        # with y.global_vec_wo() as yvec:
-        #     y_vec = yvec
-        
-        # self.ksp.solve(x_vec,y_vec)
-        #PETSc.Sys.Print(f"Whose calling? Rank {self.temporal_rank} subrank {self.spatial_rank}",comm=COMM_SELF)
+        # ---------------------------------------------------------------------------
+        # FORWARD REDUCTION
+        # ---------------------------------------------------------------------------
+        L_k, D_k, f_k, L_s, D_s, f_s = self.forward_reduction() 
 
-        B_k, A_k, f_k, B_s, A_s, f_s = self.forward_reduction(pc,x,y) # We still need to deal with A_0. Currently only have A_i, B_i for i = 1,...,n+1
+        if self.temporal_rank == 0: # Temporal rank 0 needs to solve for x0.
+            F = self.get_factored_matrix(first_block, self.ensemble.comm)
+            x0 = first_rhs.duplicate()
+            F.solve(first_rhs, x0)
 
-        # N Temporal processes/ranks have finished their forward reduction step. Each own M spatial ranks.
-
-        if self.temporal_rank == 0: # Temporal rank 0 (with M spatial ranks) needs to solve for x0.
-            local_pc = PETSc.PC().create(comm=self.ensemble.comm)
-            local_pc.setType("lu")
-            local_pc.setFactorSolverType("mumps") # cholesky also ok :)
-            local_pc.setOperators(self.first_block)
-            local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
-            local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
-            local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
-            local_pc.setUp()
-            F = local_pc.getFactorMatrix() # F is the factored matrix of A1
-            x0 = self.first_rhs.duplicate()
-            F.solve(self.first_rhs, x0) # x0 is now solved for temporal rank 0, distributed overs its M spatial ranks.
-
-        # The solution is a motherfucking PENCIL BITCH!
+        # Define the pencil for the current rank for timestep ordering
+        # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
+        # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then p0.subshape = (3,10)
+        # This let's us use a0 to write to the global solution vector y 
         subcomm = Subcomm(self.ensemble.ensemble_comm, [0, 1])
-        nlocal = self.field_function_space.node_set.size # DOFs for this rank
+        nlocal = self.field_function_space.node_set.size # Spatial DOFs for this rank
         NN = np.array([self.ntimesteps, nlocal], dtype=int)
-
-        # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If patial rank 0, temporal rank 0
-        # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then
-        # p0.subshape = (3,10)
         self.p0 = Pencil(subcomm, NN, axis=1)
         self.a0 = np.zeros(self.p0.subshape,dtype=np.float64)
 
-        # p1 : Redescribes p0 to a pencil over all timesteps.
-        # p1 = self.p0.pencil(0)
-        # a1 = np.zeros(p1.subshape,dtype=np.float64)
-        # transfer = self.p0.transfer(p1,dtype=np.float64)
-
+        # We can write x0 to the global solution vector y
         if self.temporal_rank == 0:
             local_x0 = x0.getArray()
             self.a0[0,:] = local_x0[:]
-            
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
         
-        #PETSc.Sys.Print(f"Rank {self.temporal_rank, self.spatial_rank} a0.shape : {self.a0.shape}", comm=fd.COMM_SELF)
+        # ---------------------------------------------------------------------------
+        # INTERFACE SOLVE (processor communication)
+        # ---------------------------------------------------------------------------
+
+        # Total number of temporal ranks
         n_temporal = self.ensemble.ensemble_comm.size
 
         # Allocate buffers
@@ -248,22 +154,13 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         else:
             x_prev = x0 
 
-        # Solve: x_next = A_k^{-1} (f_k - B_k * x_prev)
+        # Solve: x_next = D_k^{-1} (f_k - L_k * x_prev)
         rhs = f_k.duplicate()
         f_k.scale(-1.0)
-        B_k.multAdd(x_prev, f_k, rhs)  # f_k <- B_k * x_prev - f_k
-        rhs.scale(-1.0) # rhs <- f_k - B_k * x_prev
-
+        L_k.multAdd(x_prev, f_k, rhs)  # f_k <- L_k * x_prev - f_k
+        rhs.scale(-1.0) # rhs <- f_k - L_k * x_prev
         x_next = rhs.duplicate()
-        local_pc = PETSc.PC().create(comm=self.ensemble.comm)
-        local_pc.setType("lu") # can also do 'cholesky' here?
-        local_pc.setFactorSolverType("mumps")
-        local_pc.setOperators(A_k)
-        local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
-        local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
-        local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
-        local_pc.setUp()
-        F = local_pc.getFactorMatrix()
+        F = self.get_factored_matrix(D_k, self.ensemble.comm)
         F.solve(rhs, x_next)
 
         # Send to next temporal rank
@@ -276,55 +173,159 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             self.ensemble.send(x_next_function, dest=dest, tag=88)
         
         # All ranks now own a x_prev and x_next
-        # Now we need to do the backward reduction step
-        self.back_substitution(pc, y, x_prev, x_next, B_s, A_s, f_s)
-
-        # local_x = x_prev.getArray()
-        # self.a0[1,:] = local_x[:]
-        # with y.global_vec_wo() as yvec:
-        #     yvec.array[:] = self.a0.reshape(-1)[:]
         
-        # PETSc.Sys.Print(f"view y {y._vec.view()}")
+        # ---------------------------------------------------------------------------
+        # BACKSUBSTITUTION (also writes to the global solution vector y)
+        # ---------------------------------------------------------------------------
+        self.back_substitution(y, x_prev, L_s, D_s, f_s)
 
 
     @profiler()
-    def back_substitution(self, pc, y, x_prev, x_next, B_s, A_s, f_s):
-        # length of B_s, A_s, f_s should be equal to the number of levels of reduction
-        substitution_steps = len(B_s)
+    def forward_reduction(self):
+        """
+        Perform the forward reduction step of the cyclic reduction algorithm.
+
+        Notes
+        -----
+            - This function is not self-contained. It relies on the class variables
+              `self.diag_matrices`, `self.lower_diag_matrices`, and `self.rhs`
+            - The function modifies these variables during the reduction process.
+            - Should potentially be refactored to avoid modifying class variables.
+        """
+
+        # Store the matrices and vectors for backsubstitution
+        L_s = [] # This will become a list of lists of matrices, i.e. L_s = [[L1,L3,L7],[L2,L6],[L4]] 
+        D_s = [] # This will become a list of lists of matrices, i.e. D_s = [[D1,D3,D7],[D2,D6],[D4]]
+        f_s = [] # This will become a list of lists of vectors, i.e. f_s = [[f1,f3,f7],[f2,f6],[f4]]
+        
+        offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1
+        
+        current_diag = self.diag_matrices[offset:]
+        current_off_diag = self.lower_diag_matrices[offset:]
+        current_rhs = self.rhs
+
+        # We don't need to store these anymore
+        self.diag_matrices = None
+        self.lower_diag_matrices = None
+        self.rhs = None
+
+        while len(current_diag) != 1:
+
+            # Placeholders for the next level of reduction
+            next_diag = []
+            next_off_diag = []
+            next_rhs = []
+            
+            # These lists will fill L_s, D_s and f_s respectively
+            L_s_temp = [] 
+            D_s_temp = []
+            f_s_temp = []
+
+            for i in range(0,len(current_diag),2): # Step twice at a time
+
+                D1 = current_diag[i]
+                L1 = current_off_diag[i]
+                f1 = current_rhs[i]
+
+                D2 = current_diag[i+1]
+                L2 = current_off_diag[i+1]
+                f2 = current_rhs[i+1]
+
+                # Intermediate storing for backward step (maybe add as self. variables)
+                L_s_temp.append(L1.copy())
+                D_s_temp.append(D1.copy())
+                f_s_temp.append(f1.copy())
+
+                # Compute D1^{-1} * f1 
+                F = self.get_factored_matrix(D1, self.ensemble.comm)
+                D1inv_f1 = f1.duplicate()
+                F.solve(f1, D1inv_f1)
+
+                # Compute new_f1 <- L2 * D^{-1} * f1 - f2 
+                new_f1 = f2.copy()
+                f2.scale(-1.0) # Set f2 <- -f2
+                L2.multAdd(D1inv_f1, f2, new_f1) # A.multAdd(x,v,y) computes Ax + v and stores in y
+
+                # Compute D1^{-1} * L1 
+                L1.convert('dense')
+                D1inv_L1 = PETSc.Mat().createDense(size=L1.getSizes(), comm=self.ensemble.comm)
+                D1inv_L1.setUp()
+                D1inv_L1.assemble()
+                F.matSolve(L1, D1inv_L1) # F.matSolve(B, X) solves FX=B for factored matrix F. Stores in X
+                
+                # Compute new_L1 <- L2 * D1^{-1} * L1
+                new_L1 = L2.matMult(D1inv_L1)
+                D1inv_L1.destroy()
+
+                # Set new D1 <- -D2 
+                new_D1 = D2.copy()
+                new_D1.scale(-1.0)
+
+                # Store for next level of reduction
+                next_diag.append(new_L1)
+                next_off_diag.append(new_D1)
+                next_rhs.append(new_f1)
+
+                # Destruction
+                D1.destroy()
+                D2.destroy()
+                L1.destroy()
+                L2.destroy()
+                D1inv_L1.destroy()
+                D1inv_f1.destroy()
+                F.destroy()
+                f1.destroy()
+                f2.destroy()
+            
+            # Arrange the next level of reduction
+            current_diag = next_diag
+            current_off_diag = next_off_diag
+            current_rhs = next_rhs
+
+            # Store the matrices and vectors for backsubstitution
+            L_s.append(L_s_temp)
+            D_s.append(D_s_temp)
+            f_s.append(f_s_temp)
+
+        return current_off_diag[0], current_diag[0], current_rhs[0], L_s, D_s, f_s
+    
+    @profiler()
+    def back_substitution(self, y, x_prev, L_s, D_s, f_s):
+        """
+        Perform the back substitution step of the cyclic reduction algorithm.
+        """
+
+        # Length of L_s, D_s, f_s should be equal to the number of levels of reduction/substitution steps
+        substitution_steps = len(L_s)
 
         offset = 1 if self.temporal_rank == 0 else 0 # Temporal rank 0 is offset from other ranks by 1
-        idxs = back_substitution_indices(substitution_steps,offset=offset) # Tells self.a0 where to put the data
+        idxs = self.back_substitution_indices(substitution_steps,offset=offset) # Tells self.a0 where to put the data
 
-        # First time step (except x0) for each temporal rank is x_prev and is already computed. Write to global array y
+        # First time step for each temporal rank (except rank 0) is x_prev 
+        # and is already computed. Therefore, we can immediately write to global array y
         self.a0[offset,:] = x_prev.getArray()[:]
         with y.global_vec_wo() as yvec:
             yvec.array[:] = self.a0.reshape(-1)[:]
 
-        # We need to go backwards through the levels of reduction
-        # B_s, A_s, f_s are lists of lists of matrices/vectors
-        # B_s[i] is a list of the lower matrices for the i-th level of reduction etc.
-        x_s = [x_prev.copy()]
+        # We need to iterate backwards through the levels of reduction
+        # L_s, D_s, f_s are lists of lists of matrices/vectors
+        # L_s[i] is a list of the lower matrices for the i-th level of reduction etc.
+
+        x_s = [x_prev.copy()] # Keep track of the x's we solve
         for i in range(substitution_steps-1,-1,-1):
-            new_xs = []
-            for j, (B, A, f, idx) in enumerate(zip(B_s[i], A_s[i], f_s[i], idxs[i])):
-                # Do something
-                # B*x_before + A*x_after = f
-                # Solve: x[j+1] = A^{-1} (f - B * x[j])
+
+            new_xs = [] # List of new x's to be computed
+
+            for j, (L, D, f, idx) in enumerate(zip(L_s[i], D_s[i], f_s[i], idxs[i])):
+                
+                # Solve new_x = D^{-1} * (f - L * x[j])
                 rhs = f.duplicate()
                 f.scale(-1.0)
-                B.multAdd(x_s[j], f, rhs)  # f_k <- B_k * x_prev - f_k
-                rhs.scale(-1.0) # rhs <- f_k - B_k * x_prev
+                L.multAdd(x_s[j], f, rhs)  # rhs <- L * x[j] - f
+                rhs.scale(-1.0) # rhs <- f - L * x[j]
 
                 x_new = f.duplicate()
-                local_pc = PETSc.PC().create(comm=self.ensemble.comm)
-                local_pc.setType("lu") # can also do 'cholesky' here?
-                local_pc.setFactorSolverType("mumps")
-                local_pc.setOperators(A)
-                local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
-                local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
-                local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
-                local_pc.setUp()
-                F = local_pc.getFactorMatrix()
+                F = self.get_factored_matrix(D, self.ensemble.comm)
                 F.solve(rhs, x_new)
 
                 self.a0[idx,:] = x_new.getArray()[:]
@@ -332,114 +333,94 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                     yvec.array[:] = self.a0.reshape(-1)[:]
                 new_xs.append(x_new.copy())
 
+            # Due to the forward reduction step removing every other row, 
+            # we need to interleave our current x's with the new x's
+            # to restore the original ordering.
+            # For example, if we have x_s = [x0,x2,x4] and new_xs = [x1,x3],
+            # we want to interleave them to get x_s = [x0,x1,x2,x3,x4].
             x_s = [elem for pair in zip(x_s, new_xs) for elem in pair]
         
-
-
-        
-
     @profiler()
-    def forward_reduction(self,pc,x,y):
+    def get_factored_matrix(self, A, comm):
+        """
+        Factor a matrix using LU decomposition with MUMPS.
 
-        B_s = [] # This should be list of lists of matrices, i.e. [[B1,B3,B7],[B2,B6],[B4]] 
-        A_s = [] # This should be list of lists of matrices, i.e. [[A1,A3,A7],[A2,A6],[A4]]
-        f_s = [] # This should be list of lists of vectors, i.e. [[f1,f3,f7],[f2,f6],[f4]]
+        This function creates a PETSc preconditioner (PC) object configured to
+        perform LU factorization using the MUMPS solver. It sets the provided
+        matrix `A` as the operator and configures solver parameters to enhance
+        numerical stability and suppress MUMPS-specific output. The factored
+        matrix is then returned, allowing reuse in subsequent solves.
+
+        Parameters
+        ----------
+        A : PETSc.Mat
+            The matrix to factor. Must be assembled, square and either of type MPIAIJ or MPIDENSE.
+        comm : PETSc.Comm
+            The MPI communicator over which to create the PETSc PC.
+
+        Returns
+        -------
+        PETSc.Mat
+            The LU-factored matrix configured with MUMPS.
+
+        Notes
+        -----
+        - This function sets `ICNTL(24) = 1` to improve pivot detection and
+        `ICNTL(13) = 0` to suppress MUMPS output. Both `ICNTL(13) = 1` and
+        `ICNTL(13) = 0` are supported.
+        - The pivot convergence tolerance `CNTL(3)` is set to `1e-7`.
+
+        Examples
+        --------
+        >>> F = get_factored_matrix(A, comm)
+        >>> F.solve(b, x)
+        """
+        local_pc = PETSc.PC().create(comm=comm)
+        local_pc.setType("lu")
+        local_pc.setFactorSolverType("mumps")
+        local_pc.setOperators(A)
+        local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
+        local_pc.getFactorMatrix().setMumpsIcntl(13, 0)
+        local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
+        local_pc.setUp()
+        return local_pc.getFactorMatrix()
+    
+    @profiler()
+    def back_substitution_indices(self, reduction_levels, offset=0):
+        """
+        Generate indices for back substitution in cyclic reduction.
         
-        time_steps = self.nlocal_timesteps
-        if self.temporal_rank == 0:
-            time_steps -= 1
+        This convenience function computes and returns a list of lists containing
+        the indices of the removed variables at each level of the reduction process.
+        Each inner list corresponds to a specific reduction level.
         
-        steps_of_reduction = int(np.log2(time_steps))
+        Parameters
+        ----------
+        reduction_levels : int
+            The number of levels of reduction.
+        offset : int
+            The offset to apply to the indices.
+        
+        Returns
+        -------
+        list of list of int
+            A list where each inner list contains the indices for back substitution.
+        
+        Examples
+        --------
+        >>> back_substitution_indices(3, 0)
+        [[1, 3, 5, 7], [2, 6], [4]]
+        
+        >>> back_substitution_indices(3, 1)
+        [[2, 4, 6, 7], [3, 7], [5]]
+        """
+        rows = int(2**reduction_levels)
+        indices = np.arange(offset, rows + offset)
+        index_list = []
+        for _ in range(reduction_levels):
+            even_indices = indices[::2]
+            odd_indices = indices[1::2]
+            index_list.append(odd_indices)
+            indices = even_indices
 
-        current_diag = self.diag_matrices.copy()
-        current_off_diag = self.off_diag_matrices.copy()
-        current_rhs = self.cr_rhs.copy()
-
-        while time_steps != 1:
-
-            next_diag = []
-            next_off_diag = []
-            next_rhs = []
-            
-            B_s_temp = [] 
-            A_s_temp = []
-            f_s_temp = []
-
-            for i in range(0,time_steps,2): # Step twice at a time
-                A1 = current_diag[i]
-                A2 = current_diag[i+1]
-
-                B1 = current_off_diag[i]
-                B2 = current_off_diag[i+1]
-
-                f1 = current_rhs[i]
-                f2 = current_rhs[i+1]
-
-                # === Store for backward step (maybe add as self. variables) ===
-                B_s_temp.append(B1.copy())
-                A_s_temp.append(A1.copy())
-                f_s_temp.append(f1.copy())
-
-                # === Factor A1 ===
-                #A1_dense = A1.convert('dense')
-                local_pc = PETSc.PC().create(comm=self.ensemble.comm)
-                local_pc.setType("lu") # can also do 'cholesky' here?
-                local_pc.setFactorSolverType("mumps")
-                local_pc.setOperators(A1)
-                local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
-                local_pc.getFactorMatrix().setMumpsIcntl(13, 0) # both (13,1) and (13,0) works!
-                local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
-                local_pc.setUp()
-                F = local_pc.getFactorMatrix() # F is the factored matrix of A1
-
-                # === Solve A^{-1} * f1 ===
-                A1inv_f1 = f1.duplicate()
-                F.solve(f1, A1inv_f1)
-
-                # === Compute new_f1 <- B2 * A^{-1} * f1 - f2 ===
-                new_f1 = f2.copy()
-                f2.scale(-1.0) # Set f2 <- -f2
-                B2.multAdd(A1inv_f1, f2, new_f1) # A.multAdd(x,v,y) computes Ax + v and stores in y
-
-                # === Solve A^{-1} * B1 ===
-                B1.convert('dense')
-                #PETSc.Sys.Print(f"B1_dense view: {B1_dense.view()} \n ",comm=COMM_SELF)
-                A1inv_B1 = PETSc.Mat().createDense(size=B1.getSizes(), comm=self.ensemble.comm)
-                A1inv_B1.setUp()
-                A1inv_B1.assemble()
-                F.matSolve(B1, A1inv_B1) # F.matSolve(B, X) solves FX=B for factored matrix F. Stores in X
-                
-                # === Compute new_B1 <- B2 * A1^{-1} * B1 ===
-                new_B1 = B2.matMult(A1inv_B1)
-                A1inv_B1.destroy()
-
-                # === Set new A1 <- -A2  ===
-                new_A1 = A2.copy()
-                new_A1.scale(-1.0)
-
-                # === Store for next level of reduction ===
-                next_diag.append(new_B1)
-                next_off_diag.append(new_A1)
-                next_rhs.append(new_f1)
-
-                # === Destruction ===
-                A1.destroy()
-                A2.destroy()
-                B1.destroy()
-                B2.destroy()
-                A1inv_B1.destroy()
-                A1inv_f1.destroy()
-                F.destroy()
-                f1.destroy()
-                f2.destroy()
-            
-            current_diag = next_diag
-            current_off_diag = next_off_diag
-            current_rhs = next_rhs
-            time_steps = time_steps//2
-
-            B_s.append(B_s_temp)
-            A_s.append(A_s_temp)
-            f_s.append(f_s_temp)
-
-        return current_off_diag[0], current_diag[0], current_rhs[0], B_s, A_s, f_s
+        return index_list
