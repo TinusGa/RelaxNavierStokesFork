@@ -77,7 +77,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
             D = fd.assemble(F1, bcs=self.block_bcs).petscmat
             L = fd.assemble(F2, bcs=self.block_bcs).petscmat
-            f = u0.dat._vec.copy()
+
+            if self.temporal_rank == 0 and i == 0:
+                RHS = (1/self.dt) * self.form_mass(u0, v)
+                f = fd.assemble(RHS, bcs=self.block_bcs)
+                f = f.dat._vec
+            else:
+                f = u0.dat._vec.copy()
+            
 
             self.diag_matrices.append(D)
             self.lower_diag_matrices.append(L)
@@ -117,6 +124,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F = self.get_factored_matrix(first_block, self.ensemble.comm)
             x0 = first_rhs.duplicate()
             F.solve(first_rhs, x0)
+            PETSc.Sys.Print(f"x0 = {x0.view()}")
 
         # Define the pencil for the current rank for timestep ordering
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
