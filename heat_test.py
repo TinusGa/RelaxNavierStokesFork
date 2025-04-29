@@ -9,6 +9,7 @@ from firedrake.dmhooks import get_function_space
 import matplotlib.pylab as plt
 from time import time
 
+
 class CyclicReduction(PCBase):
     
     _prefix = "CR_"
