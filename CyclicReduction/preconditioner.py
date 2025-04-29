@@ -36,6 +36,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                            0*bc.function_arg,
                            bc.sub_domain)
             for bc in self.aaoform.field_bcs)
+        
+        # PETSc.Sys.Print(f" state_func view: {self.state_func[0].dat._vec.view()}")
 
         
         self.diag_matrices = []
@@ -82,9 +84,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 RHS = (1/self.dt) * self.form_mass(u0, v)
                 f = fd.assemble(RHS, bcs=self.block_bcs)
                 f = f.dat._vec
+                ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
+                PETSc.Sys.Print(f"f at timestep {ii} = {f.getArray()}",comm=fd.COMM_SELF)
             else:
                 f = u0.dat._vec.copy()
-            
+                #f.scale(0.0)
+
+            # ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
+            # PETSc.Sys.Print(f"f at timestep {ii} = {self._x[i].dat._vec.getArray()}",comm=fd.COMM_SELF)
 
             self.diag_matrices.append(D)
             self.lower_diag_matrices.append(L)
@@ -107,7 +114,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
     @profiler()
     def apply_impl(self, pc, x, y):
         
-        y.zero()
+        #y.zero()
+
+        for i in range(self.nlocal_timesteps):
+            ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
+            PETSc.Sys.Print(f"x at timestep {ii} = {x[i].dat._vec.getArray()}",comm=fd.COMM_SELF)
 
         # Store these before the reduction step as self.diag_matrices and self.rhs are modified
         # during the reduction step.
@@ -124,8 +135,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F = self.get_factored_matrix(first_block, self.ensemble.comm)
             x0 = first_rhs.duplicate()
             F.solve(first_rhs, x0)
-            PETSc.Sys.Print(f"x0 = {x0.view()}")
-
+            
         # Define the pencil for the current rank for timestep ordering
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
         # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then p0.subshape = (3,10)
@@ -142,6 +152,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             self.a0[0,:] = local_x0[:]
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
+        
+        # PETSc.Sys.Print(f"yvec = {y._vec.view()}")
         
         # ---------------------------------------------------------------------------
         # INTERFACE SOLVE (processor communication)
@@ -249,7 +261,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 D1inv_f1 = f1.duplicate()
                 F.solve(f1, D1inv_f1)
 
-                # Compute new_f1 <- L2 * D^{-1} * f1 - f2 
+                # Compute new_f1 <- L2 * D1^{-1} * f1 - f2 
                 new_f1 = f2.copy()
                 f2.scale(-1.0) # Set f2 <- -f2
                 L2.multAdd(D1inv_f1, f2, new_f1) # A.multAdd(x,v,y) computes Ax + v and stores in y
