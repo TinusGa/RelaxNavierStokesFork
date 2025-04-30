@@ -14,9 +14,9 @@ warnings.simplefilter("ignore", FutureWarning)
 #Problem parameters used if running this script
 class parameters:
     def __init__(self):
-        self.N = 50
+        self.N = 9
         self.dt = 0.001 #Specified instead of end time
-        self.M = 20
+        self.M = 10
         self.Mbase = 5
         self.Mref = 2
         self.degree = {'space': 1,
@@ -82,7 +82,7 @@ def heat(para=parameters):
                              'mat_type': 'aij',
                              'ksp_type': 'fgmres',
                              "ksp_monitor_true_residual": None,
-                             "ksp_max_it": 100,
+                             "ksp_max_it": 0,
                              "ksp_gmres_restart": 100,
                              "ksp_atol": 1e-6,
                              "ksp_rtol": 1e-6,

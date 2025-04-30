@@ -84,11 +84,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 RHS = (1/self.dt) * self.form_mass(u0, v)
                 f = fd.assemble(RHS, bcs=self.block_bcs)
                 f = f.dat._vec
-                ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
-                PETSc.Sys.Print(f"f at timestep {ii} = {f.getArray()}",comm=fd.COMM_SELF)
+                # ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
+                # PETSc.Sys.Print(f"f at timestep {ii} = {f.getArray()}",comm=fd.COMM_SELF)
             else:
                 f = u0.dat._vec.copy()
-                #f.scale(0.0)
+                f.scale(0.0)
 
             # ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
             # PETSc.Sys.Print(f"f at timestep {ii} = {self._x[i].dat._vec.getArray()}",comm=fd.COMM_SELF)
@@ -111,21 +111,107 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
     def update(self, pc):
         pass
 
-    @profiler()
     def apply_impl(self, pc, x, y):
-        
-        #y.zero()
+        """
+        Solve with normal time-stepping. To check if build is correct.
+        """
+        y.zero()
 
-        for i in range(self.nlocal_timesteps):
-            ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
-            PETSc.Sys.Print(f"x at timestep {ii} = {x[i].dat._vec.getArray()}",comm=fd.COMM_SELF)
+        # Pencil to help store solutions in the global array y
+        subcomm = Subcomm(self.ensemble.ensemble_comm, [0, 1])
+        nlocal = self.field_function_space.node_set.size # Spatial DOFs for this rank
+        NN = np.array([self.ntimesteps, nlocal], dtype=int)
+        self.p0 = Pencil(subcomm, NN, axis=1)
+        self.a0 = np.zeros(self.p0.subshape,dtype=np.float64)
+
+        n_temporal = self.ensemble.ensemble_comm.size
+
+        if self.temporal_rank == 0:
+            first_block = self.diag_matrices[0].copy()
+            first_rhs = self.rhs[0].copy()
+            #first_rhs = x[0].dat._vec.copy()
+            F = self.get_factored_matrix(first_block, self.ensemble.comm)
+            x0 = first_rhs.duplicate()
+            F.solve(first_rhs, x0)
+
+            local_x0 = x0.getArray()
+            PETSc.Sys.Print(f"(Rank, local_step) :  {fd.COMM_WORLD.rank,0} x0 = {local_x0[:]} \n",comm=fd.COMM_SELF)
+            self.a0[0,:] = local_x0[:]
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = self.a0.reshape(-1)[:]
+        
+
+        if self.temporal_rank > 0:
+            # Receive x_prev from previous temporal rank
+            x_prev_function = fd.Function(self.field_function_space)
+            source = self.temporal_rank - 1
+            self.ensemble.recv(x_prev_function, source=source, tag=88)
+            # Convert x_prev_function to a PETSc Vec
+            with x_prev_function.dat.vec as v:
+                x_prev = v.copy()
+        else:
+            x_prev = x0 
+        
+        offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1
+        current_diag = self.diag_matrices[offset:]
+        current_off_diag = self.lower_diag_matrices[offset:]
+        current_rhs = self.rhs[offset:]
+
+        for i in range(len(current_diag)):
+            L = current_off_diag[i]
+            D = current_diag[i]
+            f = current_rhs[i]
+
+            # Solve: x_next = D^{-1} (f - L * x_prev)
+            rhs = x_prev.duplicate()
+            f.scale(-1.0)
+            L.multAdd(x_prev, f, rhs)  # f <- L * x_prev - f
+            rhs.scale(-1.0) # rhs <- f - L * x_prev
+            F = self.get_factored_matrix(D, self.ensemble.comm)
+            x_next = rhs.duplicate()
+            F.solve(rhs, x_next)
+            
+            x_next_array = x_next.getArray()
+            self.a0[i+offset,:] = x_next_array[:]
+
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = self.a0.reshape(-1)[:]
+        
+        # Send to next temporal rank
+        if self.temporal_rank < n_temporal - 1:
+            dest = self.temporal_rank + 1
+            # Convert x_next to a Firedrake Function
+            x_next_function = fd.Function(self.field_function_space)
+            with x_next_function.dat.vec as v:
+                x_next.copy(v) # Copies data from x_next to v
+            self.ensemble.send(x_next_function, dest=dest, tag=88)
+        
+
+    @profiler()
+    def apply_impl2(self, pc, x, y):
+        
+        y.zero()
+
+        # for i in range(self.nlocal_timesteps):
+        #     ii = self.state_func.transform_index(i, from_range='slice', to_range='window')
+        #     PETSc.Sys.Print(f"x at timestep {ii} = {x[i].dat._vec.getArray()}",comm=fd.COMM_SELF)
+
+        # if self.temporal_rank == 0:
+        #     x00 = x[0].dat._vec.copy()
+        #     PETSc.Sys.Print(f"x[0] = {x00.getArray()}",comm=fd.COMM_SELF)
+
+        # if self.temporal_rank == 0:
+        #     with x.global_vec_wo as xvec:
+        #         PETSc.Sys.Print(f"x array = {xvec.array[:]}",fd.COMM_SELF)
 
         # Store these before the reduction step as self.diag_matrices and self.rhs are modified
         # during the reduction step.
         if self.temporal_rank == 0:
             first_block = self.diag_matrices[0].copy()
             first_rhs = self.rhs[0].copy()
-
+            
+            # PETSc.Sys.Print(f"first_rhs = {first_rhs.getArray()}",comm=fd.COMM_SELF)
+        
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
         # ---------------------------------------------------------------------------
@@ -135,6 +221,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F = self.get_factored_matrix(first_block, self.ensemble.comm)
             x0 = first_rhs.duplicate()
             F.solve(first_rhs, x0)
+            #PETSc.Sys.Print(f"(Rank, local_step) :  {fd.COMM_WORLD.rank,0} x0 = {x0.getArray()[:]} \n",comm=fd.COMM_SELF)
             
         # Define the pencil for the current rank for timestep ordering
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
@@ -183,6 +270,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         F = self.get_factored_matrix(D_k, self.ensemble.comm)
         F.solve(rhs, x_next)
 
+        # PETSc.Sys.Print(f"temporal rank {self.temporal_rank} x_next = {x_next.getArray()} \n",comm=fd.COMM_SELF)
+
         # Send to next temporal rank
         if self.temporal_rank < n_temporal - 1:
             dest = self.temporal_rank + 1
@@ -222,7 +311,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         current_diag = self.diag_matrices[offset:]
         current_off_diag = self.lower_diag_matrices[offset:]
-        current_rhs = self.rhs
+        current_rhs = self.rhs[offset:]
 
         # We don't need to store these anymore
         self.diag_matrices = None
@@ -390,7 +479,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         `ICNTL(13) = 0` are supported.
         - The pivot convergence tolerance `CNTL(3)` is set to `1e-7`.
 
-        Examples
+        Examples. Solve Ax = b
         --------
         >>> F = get_factored_matrix(A, comm)
         >>> F.solve(b, x)

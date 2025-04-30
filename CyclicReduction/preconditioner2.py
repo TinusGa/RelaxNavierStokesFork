@@ -20,31 +20,40 @@ class CyclicReductionPC2(ASMPatchPC):
     _prefix = '_CR2'
 
     def initialize(self,pc):
-        PETSc.Sys.Print(f"dir for self {dir(self)} \n \n")
+        _, self.A = pc.getOperators() # <class 'petsc4py.PETSc.Mat'>
+        PETSc.Sys.Print(f"Ownership range of A: {self.A.getOwnershipRange()}")
+        PETSc.Sys.Print(f"Ownership ranges of A: {self.A.getOwnershipRanges()}")
+        PETSc.Sys.Print(f"local size of A: {self.A.getLocalSize()}")
+        PETSc.Sys.Print(f"size of A: {self.A.getSize()} \n \n")
+        dm = self.A.getDM()
 
+        PETSc.Sys.Print(f"dm dir: {dir(dm)}")
 
+        # V = self.mesh._V
+        # ises = self.get_patches(V)
 
         if True:
-            raise ValueError("Stopping for simplicity")
-
+            raise ValueError("This is a test error")
+        
     def update(self, pc):
         pass
 
     def apply(self, pc, x, y):
         
         PETSc.Sys.Print("CyclicReductionPC2: Applying preconditioner...")
-        _, A = pc.getOperators() 
-        self.ksp = PETSc.KSP().create()
-        self.ksp.setOperators(A)
-        self.ksp.setFromOptions()
-        self.ksp.solve(x,y)
+        # _, A = pc.getOperators() 
+        # self.ksp = PETSc.KSP().create()
+        # self.ksp.setOperators(self.A)
+        # self.ksp.setFromOptions()
+        # self.ksp.solve(x,y)
+        y = x.copy()
+        y.scale(0.5)
         
-
     def applyTranspose(self, pc, x, y):
         pass
 
     def get_patches(self, V):
-        pass
+        super().get_patches(self, V)
 
     def view(pc, viewer=None):
         pass

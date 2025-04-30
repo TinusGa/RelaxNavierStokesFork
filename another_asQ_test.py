@@ -55,7 +55,7 @@ V = FunctionSpace(mesh, "CG", degree_space)
 x, y = SpatialCoordinate(V.mesh())
 
 u0 = Function(V)
-u0.project(cos(pi*x)*cos(2*pi*y))
+u0.project(cos(2*pi*x)*cos(2*pi*y))
 
 # bcs = [DirichletBC(V, 0, sub_domain=1)]
 bcs = []
