@@ -124,7 +124,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F = self.get_factored_matrix(first_block, self.ensemble.comm)
             x0 = first_rhs.duplicate()
             F.solve(first_rhs, x0)
-            PETSc.Sys.Print(f"x0 = {x0.view()}")
+            #PETSc.Sys.Print(f"x0 = {x0.view()}")
 
         # Define the pencil for the current rank for timestep ordering
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
@@ -140,6 +140,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         if self.temporal_rank == 0:
             local_x0 = x0.getArray()
             self.a0[0,:] = local_x0[:]
+            PETSc.Sys.Print(f"x0 = {local_x0[:]}",comm=fd.COMM_SELF)
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
         
@@ -210,7 +211,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         current_diag = self.diag_matrices[offset:]
         current_off_diag = self.lower_diag_matrices[offset:]
-        current_rhs = self.rhs
+        current_rhs = self.rhs[offset:]
 
         # We don't need to store these anymore
         self.diag_matrices = None
