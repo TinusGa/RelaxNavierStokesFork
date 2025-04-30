@@ -27,6 +27,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.state_func = self.aaofunc.copy()
         self.field_function_space = self.aaofunc.field_function_space
 
+        # PETSc.Sys.Print(f"dir of aaofunc: {dir(self.aaofunc)}")
+        # Do these exist? What are they?
+        # PETSc.Sys.Print(f"dir of aaoform: {dir(self.aaoform)}")
+        # PETSc.Sys.Print(f"type aaoform : {type(self.aaoform.form)}")
+
         self.spatial_rank = self.ensemble.comm.rank
         self.temporal_rank = self.ensemble.ensemble_comm.rank
 
@@ -135,7 +140,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F.solve(first_rhs, x0)
 
             local_x0 = x0.getArray()
-            PETSc.Sys.Print(f"(Rank, local_step) :  {fd.COMM_WORLD.rank,0} x0 = {local_x0[:]} \n",comm=fd.COMM_SELF)
+            # PETSc.Sys.Print(f"(Rank, local_step) :  {fd.COMM_WORLD.rank,0} x0 = {local_x0[:]} \n",comm=fd.COMM_SELF)
             self.a0[0,:] = local_x0[:]
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
@@ -172,6 +177,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F.solve(rhs, x_next)
             
             x_next_array = x_next.getArray()
+            # PETSc.Sys.Print(f"(Rank, local_step) :  {fd.COMM_WORLD.rank,i+offset} x0 = {x_next_array[:]} \n",comm=fd.COMM_SELF)
             self.a0[i+offset,:] = x_next_array[:]
 
             with y.global_vec_wo() as yvec:
@@ -185,6 +191,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             with x_next_function.dat.vec as v:
                 x_next.copy(v) # Copies data from x_next to v
             self.ensemble.send(x_next_function, dest=dest, tag=88)
+        
+        
+        #PETSc.Sys.Print(f"yvec = {y._vec.view()}")
         
 
     @profiler()
@@ -287,6 +296,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # BACKSUBSTITUTION (also writes to the global solution vector y)
         # ---------------------------------------------------------------------------
         self.back_substitution(y, x_prev, L_s, D_s, f_s)
+
+        PETSc.Sys.Print(f"yvec = {y._vec.view()}")
+        y.copy(self.state_func)
 
 
     @profiler()

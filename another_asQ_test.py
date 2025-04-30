@@ -202,7 +202,7 @@ def window_postproc():
         if aaoform.layout.is_local(step):
             local_step = aaofunc.transform_index(step, from_range='window')
             t = aaoform.time[local_step]
-            q_exact.interpolate(exp(-5*pi*t)*cos(pi*x)*cos(2*pi*y))
+            q_exact.project(exp(-5*pi*t)*cos(pi*x)*cos(2*pi*y))
             total_dof += q_exact.dof_dset.size
             qp = aaofunc[local_step]
             errors.dlocal[local_step] = errornorm(qp, q_exact)
@@ -223,5 +223,5 @@ def window_postproc():
     PETSc.Sys.Print(time_row)
     PETSc.Sys.Print(qerr_row)
     
-# window_postproc()
+window_postproc()
 
