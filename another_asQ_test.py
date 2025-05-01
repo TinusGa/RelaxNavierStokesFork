@@ -11,6 +11,7 @@ from asQ import (
     LinearSolver,
     SharedArray,
 )
+from asQ.pencil import Pencil, Subcomm
 from CyclicReduction.check_setup import check_setup, create_time_partition
 import time
 import warnings
@@ -196,7 +197,7 @@ PETSc.Sys.Print(f"Global solve time: {time.time()-start}s")
 q_exact = Function(V)
 errors = SharedArray(time_partition, comm=ensemble.ensemble_comm)
 times = SharedArray(time_partition, comm=ensemble.ensemble_comm)
-def window_postproc():
+def window_postproc(aaofunc):
     total_dof = 0
     for step in range(aaofunc.ntimesteps):
         if aaoform.layout.is_local(step):
@@ -211,9 +212,9 @@ def window_postproc():
     times.synchronise()
     nsteps = aaofunc.ntimesteps
     # Format each entry to fixed width
-    col_width = 7 # Adjust as needed
+    col_width = 10 # Adjust as needed
     time_row = "".join(f"{times.dglobal[i]:>{col_width}.3f}" for i in range(nsteps))
-    qerr_row = "".join(f"{errors.dglobal[i]:>{col_width}.3f}" for i in range(nsteps))
+    qerr_row = "".join(f"{errors.dglobal[i]:>{col_width}.3e}" for i in range(nsteps))
 
     # Add labels
     time_row = f"{'Times:':<7}" + time_row
@@ -223,5 +224,32 @@ def window_postproc():
     PETSc.Sys.Print(time_row)
     PETSc.Sys.Print(qerr_row)
     
-window_postproc()
+window_postproc(aaofunc)
 
+exact_sol = AllAtOnceFunction(ensemble, time_partition, V)
+q_exact = Function(V)
+
+subcomm = Subcomm(exact_sol.ensemble.ensemble_comm, [0, 1])
+nlocal = exact_sol.field_function_space.node_set.size # Spatial DOFs for this rank
+NN = np.array([exact_sol.ntimesteps, nlocal], dtype=int)
+p0 = Pencil(subcomm, NN, axis=1)
+a0 = np.zeros(p0.subshape,dtype=np.float64)
+
+# exact_array = SharedArray(time_partition, comm=ensemble.ensemble_comm)
+exact_sol.zero()
+exact_sol.initial_condition.assign(u0)
+for step in range(exact_sol.ntimesteps):
+    if aaoform.layout.is_local(step):
+
+        local_step = aaofunc.transform_index(step, from_range='window')
+        t = aaoform.time[local_step]
+        q_exact.project(exp(-5*pi*t)*cos(pi*x)*cos(2*pi*y))
+
+        a0[local_step,:] = q_exact.dat._vec.getArray()
+        
+        with exact_sol.global_vec_wo() as gvec:
+            gvec.array[:] = a0.reshape(-1)[:]
+
+        #exact_sol[local_step].copy(q_exact)
+
+window_postproc(exact_sol)
