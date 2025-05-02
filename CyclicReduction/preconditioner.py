@@ -98,7 +98,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             self.diag_matrices.append(D)
             self.lower_diag_matrices.append(L)
-            self.rhs.append(f)
+            # self.rhs.append(f)
 
         self.block_iterations = SharedArray(self.time_partition,
                                             dtype=int,
@@ -118,6 +118,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         """
         Solve with normal time-stepping. To check if build is correct.
         """
+        for i in range(self.nlocal_timesteps):
+            self.rhs.append(x[i].dat._vec.copy())
         y.zero()
 
         # Pencil to help store solutions in the global array y
