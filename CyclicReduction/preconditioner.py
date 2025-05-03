@@ -88,86 +88,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
     def update(self, pc):
         pass
 
-    def apply_impl(self, pc, x, y):
-        """
-        Solve with normal time-stepping. To check if build is correct.
-        """
-        for i in range(self.nlocal_timesteps):
-            self.rhs.append(x[i].dat._vec.copy())
-        y.zero()
-
-        # Pencil to help store solutions in the global array y
-        subcomm = Subcomm(self.ensemble.ensemble_comm, [0, 1])
-        nlocal = self.field_function_space.node_set.size # Spatial DOFs for this rank
-        NN = np.array([self.ntimesteps, nlocal], dtype=int)
-        self.p0 = Pencil(subcomm, NN, axis=1)
-        self.a0 = np.zeros(self.p0.subshape,dtype=np.float64)
-
-        n_temporal = self.ensemble.ensemble_comm.size
-
-        if self.temporal_rank == 0:
-            first_block = self.diag_matrices[0].copy()
-            first_rhs = self.rhs[0].copy()
-            F = self.get_factored_matrix(first_block, self.ensemble.comm)
-            x0 = first_rhs.duplicate()
-            F.solve(first_rhs, x0)
-
-            local_x0 = x0.getArray()
-            self.a0[0,:] = local_x0[:]
-            with y.global_vec_wo() as yvec:
-                yvec.array[:] = self.a0.reshape(-1)[:]
-        
-
-        if self.temporal_rank > 0:
-            # Receive x_prev from previous temporal rank
-            x_prev_function = fd.Function(self.field_function_space)
-            source = self.temporal_rank - 1
-            self.ensemble.recv(x_prev_function, source=source, tag=88)
-            # Convert x_prev_function to a PETSc Vec
-            with x_prev_function.dat.vec as v:
-                x_prev = v.copy()
-        else:
-            x_prev = x0 
-        
-        offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1
-        current_diag = self.diag_matrices[offset:]
-        current_off_diag = self.lower_diag_matrices[offset:]
-        current_rhs = self.rhs[offset:]
-
-        for i in range(len(current_diag)):
-            L = current_off_diag[i]
-            D = current_diag[i]
-            f = current_rhs[i]
-
-            # Solve: x_next = D^{-1} (f - L * x_prev)
-            rhs = x_prev.duplicate()
-            f.scale(-1.0)
-            L.multAdd(x_prev, f, rhs)  # f <- L * x_prev - f
-            rhs.scale(-1.0) # rhs <- f - L * x_prev
-            F = self.get_factored_matrix(D, self.ensemble.comm)
-            x_next = rhs.duplicate()
-            F.solve(rhs, x_next)
-            
-            x_next_array = x_next.getArray()
-            # PETSc.Sys.Print(f"(Rank, local_step) :  {fd.COMM_WORLD.rank,i+offset} x0 = {x_next_array[:]} \n",comm=fd.COMM_SELF)
-            self.a0[i+offset,:] = x_next_array[:]
-
-            with y.global_vec_wo() as yvec:
-                yvec.array[:] = self.a0.reshape(-1)[:]
-        
-        # Send to next temporal rank
-        if self.temporal_rank < n_temporal - 1:
-            dest = self.temporal_rank + 1
-            # Convert x_next to a Firedrake Function
-            x_next_function = fd.Function(self.field_function_space)
-            with x_next_function.dat.vec as v:
-                x_next.copy(v) # Copies data from x_next to v
-            self.ensemble.send(x_next_function, dest=dest, tag=88)
-        
-        
-        #PETSc.Sys.Print(f"yvec = {y._vec.view()}")
-        
-
     @profiler()
     def apply_impl(self, pc, x, y):
         
@@ -190,6 +110,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             F = self.get_factored_matrix(self.first_lhs, self.ensemble.comm)
             u1 = self.first_rhs.duplicate()
             F.solve(self.first_rhs, u1)
+
+            local_u1 = u1.getArray()
+            self.a0[0,:] = local_u1[:]
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = self.a0.reshape(-1)[:]
             
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
@@ -215,7 +140,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             with u_prev_function.dat.vec as v:
                 u_prev = v.copy()
         else:
-            # If this is the first temporal rank, we can use u1 as u_prev
+            # If this is the first temporal rank, we use u1 as u_prev
             u_prev = u1 
 
         # Solve: u_next = D^{-1} (f - L * u_prev)
@@ -315,6 +240,37 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         """
         Perform the back substitution step of the cyclic reduction algorithm.
         """
+        offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1. It has 1 more row than other ranks
+
+        for i in range(offset, len(main_diag)):
+            L, D, f = main_diag[i].copy(), lower_diag[i].copy(), rhs[i].copy()
+
+            # Solve: u_next = D^{-1} (f - L * u_prev)
+            rhs = u_prev.duplicate()
+            f.scale(-1.0) # Set f <- -f
+            L.multAdd(u_prev, f, rhs)  # rhs <- L * u_prev - f
+            rhs.scale(-1.0) # rhs <- f - L * u_prev
+            F = self.get_factored_matrix(D.copy(), self.ensemble.comm)
+            u_next = rhs.duplicate()
+            F.solve(rhs, u_next)
+
+            u_next_array = u_next.getArray()
+            self.a0[i,:] = u_next_array[:]
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = self.a0.reshape(-1)[:]
+            
+            u_prev = u_next.copy()
+
+            # Destruction
+            L.destroy()
+            D.destroy()
+            f.destroy()
+            rhs.destroy()
+            F.destroy()
+            u_next.destroy()
+            
+        u_prev.destroy()
+
         
         
     @profiler()
