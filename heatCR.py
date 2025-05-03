@@ -6,7 +6,16 @@ finite elements
 from firedrake import *
 import matplotlib.pylab as plt
 from time import time
-#import CyclicReduction
+from asQ import (
+    create_ensemble,
+    AllAtOnceFunction,
+    AllAtOnceForm,
+    AllAtOnceSolver,
+    LinearSolver,
+    SharedArray,
+)
+from asQ.pencil import Pencil, Subcomm
+from CyclicReduction.check_setup import check_setup, create_time_partition
 
 import warnings
 warnings.simplefilter("ignore", FutureWarning)
@@ -23,7 +32,7 @@ class parameters:
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = True
         self.solver = None
-
+        self.Pt = 4
 
 #Solve the heat equation with timings
 def heat(para=parameters):
@@ -33,23 +42,29 @@ def heat(para=parameters):
     def plus(v):
         return -0.5*jump(v,n[2]) + avg(v)
     
+    # Create a time partition and an ensemble communicator
+    time_partition = create_time_partition(para.N-1, para.Pt)
+    ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
+    
     #Define mesh
     distribution_parameters={"partition": True,
                              "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
     base_ = UnitSquareMesh(para.Mbase,para.Mbase,
-                           distribution_parameters=distribution_parameters)
+                           distribution_parameters=distribution_parameters,comm = ensemble.comm)
     spatial_mh = MeshHierarchy(base_,para.Mref)
     mh = ExtrudedMeshHierarchy(spatial_mh, para.N*para.dt,
                         base_layer = para.N,
                         refinement_ratio=1,
                         extrusion_type='uniform')
     mesh = mh[-1]
+    # mesh = spatial_mh[-1]
     n = FacetNormal(mesh)
     
     #Define function space
     space_element = FiniteElement("CG", triangle, para.degree['space'])
     time_element = FiniteElement("DG", interval, para.degree['time'])
     spacetime_element = TensorProductElement(space_element,time_element)
+    # spacetime_element = space_element
     U = FunctionSpace(mesh,spacetime_element)
 
     #Define initial condition
@@ -83,9 +98,9 @@ def heat(para=parameters):
                              'ksp_type': 'fgmres',
                              "ksp_monitor_true_residual": None,
                              "ksp_max_it": 0,
-                             "ksp_gmres_restart": 100,
-                             "ksp_atol": 1e-6,
-                             "ksp_rtol": 1e-6,
+                            #  "ksp_gmres_restart": 100,
+                            #  "ksp_atol": 1e-6,
+                            #  "ksp_rtol": 1e-6,
                              'pc_type': 'mg',
                              "pc_mg_type": "multiplicative",
                              "pc_mg_cycles": "v",

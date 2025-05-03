@@ -32,8 +32,8 @@ class CyclicReductionPC2(ASMPatchPC):
         # V = self.mesh._V
         # ises = self.get_patches(V)
 
-        if True:
-            raise ValueError("This is a test error")
+        # if True:
+        #     raise ValueError("This is a test error")
         
     def update(self, pc):
         pass
@@ -41,13 +41,16 @@ class CyclicReductionPC2(ASMPatchPC):
     def apply(self, pc, x, y):
         
         PETSc.Sys.Print("CyclicReductionPC2: Applying preconditioner...")
-        # _, A = pc.getOperators() 
-        # self.ksp = PETSc.KSP().create()
-        # self.ksp.setOperators(self.A)
-        # self.ksp.setFromOptions()
-        # self.ksp.solve(x,y)
-        y = x.copy()
-        y.scale(0.5)
+        _, A = pc.getOperators() 
+        self.ksp = PETSc.KSP().create(comm = fd.COMM_SELF)
+        self.ksp.setOperators(self.A)
+        self.ksp.setFromOptions()
+        self.ksp.solve(x,y)
+        # y = x.copy()
+        # y.scale(0.5)
+
+        # if True:
+        #      raise ValueError("This is a test error")
         
     def applyTranspose(self, pc, x, y):
         pass
