@@ -25,21 +25,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.state_func = self.aaofunc.copy()
         self.field_function_space = self.aaofunc.field_function_space
 
-        # PETSc.Sys.Print(f"dir of aaofunc: {dir(self.aaofunc)}")
-        # PETSc.Sys.Print(f"dir of self: {dir(self.jacobian.petsc_mat())}")
-
-        
-        # Do these exist? What are they?
-        # PETSc.Sys.Print(f"dir of aaoform: {dir(self.aaoform)}")
-        # PETSc.Sys.Print(f"type aaoform : {type(self.aaoform.form)}")
-
+        # This processor's spatial and temporal rank
         self.spatial_rank = self.ensemble.comm.rank
         self.temporal_rank = self.ensemble.ensemble_comm.rank
-
-        A = self.jacobian.petsc_mat()
-        #A1 = A.getLocalSubMatrix()
-        # PETSc.Sys.Print(f"A size: {A.getSize()}")
-        # PETSc.Sys.Print(f"A local size {self.temporal_rank,self.spatial_rank}: {A.getLocalSize()}",comm=fd.COMM_SELF)
 
         # Zero out bc dofs
         self.block_bcs = tuple(
@@ -52,7 +40,6 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.lower_diag_matrices = []
         self.rhs = []
 
-        derivate = False
         dt1 = fd.Constant(1/self.dt)
         theta = fd.Constant(1)
 
@@ -61,28 +48,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             u0 = self.state_func[i]
             t0 = self.time[i]
 
-            if derivate:
-                vs = fd.TestFunctions(self.field_function_space)
-                us = fd.split(u0)
+            v = fd.TestFunction(self.field_function_space)
+            u = fd.TrialFunction(self.field_function_space)
 
-                M = self.form_mass(*us, *vs)
-                K = self.form_function(*us, *vs, t0)
+            M = self.form_mass(u, v)
+            K = self.form_function(u, v, t0)
 
-                F1 = dt1*M + theta*K # Main diagonal block system
-                F2 = -dt1*M # Lower/off - diagonal block system
-
-                F1 = fd.derivative(F1, u0)
-                F2 = fd.derivative(F2, u0)
-
-            else:
-                v = fd.TestFunction(self.field_function_space)
-                u = fd.TrialFunction(self.field_function_space)
-
-                M = self.form_mass(u, v)
-                K = self.form_function(u, v, t0)
-
-                F1 = dt1*M + theta*K # Main diagonal block system
-                F2 = -dt1*M # Lower/off - diagonal block system
+            F1 = dt1*M + theta*K # Main diagonal block system
+            F2 = -dt1*M # Lower/off - diagonal block system
 
             # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
             D = fd.assemble(F1, bcs=self.block_bcs).petscmat
@@ -92,13 +65,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 RHS = (1/self.dt) * self.form_mass(u0, v)
                 f = fd.assemble(RHS, bcs=self.block_bcs)
                 f = f.dat._vec # f[1] = L*u[0]
+                self.first_lhs = D.copy()
+                self.first_rhs = f.copy()
             else:
                 f = u0.dat._vec.copy()
                 f.scale(0.0) # f[i+1] = 0
-
-            self.diag_matrices.append(D)
-            self.lower_diag_matrices.append(L)
-            # self.rhs.append(f)
+                self.diag_matrices.append(D)
+                self.lower_diag_matrices.append(L)
+                self.rhs.append(f)
 
         self.block_iterations = SharedArray(self.time_partition,
                                             dtype=int,
@@ -195,7 +169,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
 
     @profiler()
-    def apply_impl2(self, pc, x, y):
+    def apply_impl(self, pc, x, y):
         
         y.zero()
 
@@ -213,23 +187,16 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # This is the first block of the system, which is the first diagonal matrix
         # and the first rhs vector.
         if self.temporal_rank == 0:
-            first_block = self.diag_matrices[0].copy()
-            first_rhs = self.rhs[0].copy()
-
-            F = self.get_factored_matrix(first_block, self.ensemble.comm)
-            u1 = first_rhs.duplicate()
-            F.solve(first_rhs, u1)
-
-            # We can write u1 to the global solution vector y
-            # local_u1 = u1.getArray()
-            # self.a0[0,:] = local_u1[:]
-            # with y.global_vec_wo() as yvec:
-            #     yvec.array[:] = self.a0.reshape(-1)[:]
+            F = self.get_factored_matrix(self.first_lhs, self.ensemble.comm)
+            u1 = self.first_rhs.duplicate()
+            F.solve(self.first_rhs, u1)
             
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
         # ---------------------------------------------------------------------------
-        L_k, D_k, f_k, L_s, D_s, f_s = self.forward_reduction() 
+        L, D, f = self.forward_reduction(self.diag_matrices,
+                                         self.lower_diag_matrices,
+                                         self.rhs) 
 
         # ---------------------------------------------------------------------------
         # INTERFACE SOLVE (processor communication)
@@ -251,13 +218,14 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             # If this is the first temporal rank, we can use u1 as u_prev
             u_prev = u1 
 
-        # Solve: u_next = D_k^{-1} (f_k - L_k * u_prev)
-        rhs = f_k.duplicate()
-        f_k.scale(-1.0) # Set f_k <- -f_k
-        L_k.multAdd(u_prev, f_k, rhs)  # f_k <- L_k * u_prev - f_k
-        rhs.scale(-1.0) # rhs <- f_k - L_k * u_prev
+        # Solve: u_next = D^{-1} (f - L * u_prev)
+        rhs = f.duplicate()
+        f.scale(-1.0) # Set f <- -f
+        L.multAdd(u_prev, f, rhs)  # rhs <- L * u_prev - f
+        rhs.scale(-1.0) # rhs <- f - L * u_prev
+
         u_next = rhs.duplicate()
-        F = self.get_factored_matrix(D_k, self.ensemble.comm)
+        F = self.get_factored_matrix(D.copy(), self.ensemble.comm)
         F.solve(rhs, u_next)
 
         # Send to next temporal rank
@@ -269,179 +237,85 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                 u_next.copy(v) # Copies data from u_next to v
             self.ensemble.send(u_next_function, dest=dest, tag=88)
         
-        # All ranks now own a u_prev and u_next
+        # All ranks now own a u_prev and u_next. Most importantly, u_prev for each processor can be used 
+        # to solve for all its owning rows of the global system.
         
         # ---------------------------------------------------------------------------
         # BACKSUBSTITUTION (also writes to the global solution vector y)
         # ---------------------------------------------------------------------------
-        self.back_substitution(y, u_prev, L_s, D_s, f_s)
+        self.forward_substitution(self.diag_matrices, self.lower_diag_matrices, self.rhs, u_prev, y)
 
         #PETSc.Sys.Print(f"yvec = {y._vec.view()}")
         #y.copy(self.state_func)
 
 
     @profiler()
-    def forward_reduction(self):
+    def forward_reduction(self, main_diag, lower_diag, rhs):
         """
         Perform the forward reduction step of the cyclic reduction algorithm.
 
+        Expects main_diag, lower_diag and rhs to be lists of matrices/vectors
+        representing the diagonal, lower diagonal and right-hand side of the
+        system of equations respectively. Entries are expected to be in PETSc.Mat
+        or PETSc.Vec format respectively.
+
         Notes
         -----
-            - This function is not self-contained. It relies on the class variables
-              `self.diag_matrices`, `self.lower_diag_matrices`, and `self.rhs`
-            - The function modifies these variables during the reduction process.
-            - Should potentially be refactored to avoid modifying class variables.
+        - Input lists or it's entries should never be changed in any way during
+          the reduction process.
         """
 
-        # Store the matrices and vectors for backsubstitution
-        L_s = [] # This will become a list of lists of matrices, i.e. L_s = [[L1,L3,L7],[L2,L6],[L4]] 
-        D_s = [] # This will become a list of lists of matrices, i.e. D_s = [[D1,D3,D7],[D2,D6],[D4]]
-        f_s = [] # This will become a list of lists of vectors, i.e. f_s = [[f1,f3,f7],[f2,f6],[f4]]
+        # Make sure the input lists are of equal length
+        if len(main_diag) != len(lower_diag) or len(main_diag) != len(rhs):
+            raise ValueError("Input lists must be of equal length.")
         
-        offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1
-        
-        current_diag = self.diag_matrices[offset:].copy()
-        current_off_diag = self.lower_diag_matrices[offset:].copy()
-        current_rhs = self.rhs[offset:].copy()
+        # Reduce onto these variables
+        L, D, f = main_diag[0].copy(), lower_diag[0].copy(), rhs[0].copy()
 
-        # We don't need to store these anymore
-        self.diag_matrices = None
-        self.lower_diag_matrices = None
-        self.rhs = None
-
-        while len(current_diag) > 1:
-
-            # Placeholders for the next level of reduction
-            next_diag = []
-            next_off_diag = []
-            next_rhs = []
-            
-            # These lists will fill L_s, D_s and f_s respectively
-            L_s_temp = [] 
-            D_s_temp = []
-            f_s_temp = []
-
-            for i in range(0,len(current_diag),2): # Step twice at a time
-
-                D1 = current_diag[i]
-                L1 = current_off_diag[i]
-                f1 = current_rhs[i]
-
-                D2 = current_diag[i+1]
-                L2 = current_off_diag[i+1]
-                f2 = current_rhs[i+1]
-
-                # Intermediate storing for backward step (maybe add as self. variables)
-                L_s_temp.append(L1.copy())
-                D_s_temp.append(D1.copy())
-                f_s_temp.append(f1.copy())
-
-                # Compute D1^{-1} * f1 
-                F = self.get_factored_matrix(D1, self.ensemble.comm)
-                D1inv_f1 = f1.duplicate()
-                F.solve(f1, D1inv_f1)
-
-                # Compute new_f1 <- L2 * D1^{-1} * f1 - f2 
-                new_f1 = f2.copy()
-                f2.scale(-1.0) # Set f2 <- -f2
-                L2.multAdd(D1inv_f1, f2, new_f1) # A.multAdd(x,v,y) computes Ax + v and stores in y
-
-                # Compute D1^{-1} * L1 
-                L1.convert('dense')
-                D1inv_L1 = PETSc.Mat().createDense(size=L1.getSizes(), comm=self.ensemble.comm)
-                D1inv_L1.setUp()
-                D1inv_L1.assemble()
-                F.matSolve(L1, D1inv_L1) # F.matSolve(B, X) solves FX=B for factored matrix F. Stores in X
+        if len(main_diag) > 1: # this processor owns more than one timestep, so we reduce
+            for i in range(1, len(main_diag)):
+                L_next, D_next, f_next = main_diag[i].copy(), lower_diag[i].copy(), rhs[i].copy()
                 
-                # Compute new_L1 <- L2 * D1^{-1} * L1
-                new_L1 = L2.matMult(D1inv_L1)
-                D1inv_L1.destroy()
+                D_factored = self.get_factored_matrix(D.copy(), self.ensemble.comm)
+                L_dense = L.copy()
+                L_dense.convert('dense')
+                D_inv_L_dense = PETSc.Mat().createDense(size=L_dense.getSizes(), comm=self.ensemble.comm)
+                D_inv_L_dense.setUp()
+                D_inv_L_dense.assemble()
 
-                # Set new D1 <- -D2 
-                new_D1 = D2.copy()
-                new_D1.scale(-1.0)
+                # Compute L <- L_next * D^{-1} * L
+                D_factored.matSolve(L_dense, D_inv_L_dense) # D^{-1} * L and stores in D_inv_L_dense
+                L_next.matMult(D_inv_L_dense, L) # L <- L_next * D^{-1} * L
 
-                # Store for next level of reduction
-                next_diag.append(new_L1)
-                next_off_diag.append(new_D1)
-                next_rhs.append(new_f1)
+                # Compute D <- - D_next
+                D_next.scale(-1.0) # D_next <- -D_next
+                D = D_next.copy() # D <- D_next
+
+                # Compute f <- L_next * D^{-1} * f - f_next
+                D_inv_f = f.duplicate()
+                D_factored.solve(f, D_inv_f) # D^{-1} * f
+                f_next.scale(-1.0) # f_next <- -f_next
+                L_next.multAdd(D_inv_f, f_next, f) # f <- L_next * D^{-1} * f - f_next
 
                 # Destruction
-                D1.destroy()
-                D2.destroy()
-                L1.destroy()
-                L2.destroy()
-                D1inv_L1.destroy()
-                D1inv_f1.destroy()
-                F.destroy()
-                f1.destroy()
-                f2.destroy()
-            
-            # Arrange the next level of reduction
-            current_diag = next_diag
-            current_off_diag = next_off_diag
-            current_rhs = next_rhs
+                D_factored.destroy()
+                L_dense.destroy()
+                D_inv_L_dense.destroy()
+                D_inv_f.destroy()
 
-            # Store the matrices and vectors for backsubstitution
-            L_s.append(L_s_temp)
-            D_s.append(D_s_temp)
-            f_s.append(f_s_temp)
+                L_next.destroy()
+                D_next.destroy()
+                f_next.destroy()
+                
+        return L, D, f
 
-        return current_off_diag[0], current_diag[0], current_rhs[0], L_s, D_s, f_s
     
     @profiler()
-    def back_substitution(self, y, u_prev, L_s, D_s, f_s):
+    def forward_substitution(self, main_diag, lower_diag, rhs, u_prev, y):
         """
         Perform the back substitution step of the cyclic reduction algorithm.
         """
-
-        # Length of L_s, D_s, f_s should be equal to the number of levels of reduction/substitution steps
-        substitution_steps = len(L_s)
-
-        offset = 1 if self.temporal_rank == 0 else 0 # Temporal rank 0 is offset from other ranks by 1
-        idxs = self.back_substitution_indices(substitution_steps,offset=offset) # Tells self.a0 where to put the data
-
-        # First time step for each temporal rank is u_prev 
-        # and is already computed. Therefore, we can immediately write to global array y
-        self.a0[0,:] = u_prev.getArray()[:]
-        with y.global_vec_wo() as yvec:
-            yvec.array[:] = self.a0.reshape(-1)[:]
         
-        # fd.COMM_WORLD.Barrier()
-        # PETSc.Sys.Print(f"yvec = {y._vec.view()}")
-
-        # We need to iterate backwards through the levels of reduction
-        # L_s, D_s, f_s are lists of lists of matrices/vectors
-        # L_s[i] is a list of the lower matrices for the i-th level of reduction etc.
-
-        u_s = [u_prev.copy()] # Keep track of the x's we solve
-        for i in range(substitution_steps-1,-1,-1):
-
-            new_us = [] # List of new u's to be computed
-
-            for j, (L, D, f, idx) in enumerate(zip(L_s[i], D_s[i], f_s[i], idxs[i])):
-                
-                # Solve new_x = D^{-1} * (f - L * x[j])
-                rhs = f.duplicate()
-                f.scale(-1.0)
-                L.multAdd(u_s[j], f, rhs)  # rhs <- L * x[j] - f
-                rhs.scale(-1.0) # rhs <- f - L * x[j]
-
-                u_new = f.duplicate()
-                F = self.get_factored_matrix(D, self.ensemble.comm)
-                F.solve(rhs, u_new)
-
-                self.a0[idx,:] = u_new.getArray()[:]
-                with y.global_vec_wo() as yvec:
-                    yvec.array[:] = self.a0.reshape(-1)[:]
-                new_us.append(u_new.copy())
-
-            # Due to the forward reduction step removing every other row, 
-            # we need to interleave our current x's with the new x's
-            # to restore the original ordering.
-            # For example, if we have u_s = [u0,u2,u4] and new_us = [u1,u3],
-            # we want to interleave them to get u_s = [u0,u1,u2,u3,u4].
-            u_s = [elem for pair in zip(u_s, new_us) for elem in pair]
         
     @profiler()
     def get_factored_matrix(self, A, comm):
