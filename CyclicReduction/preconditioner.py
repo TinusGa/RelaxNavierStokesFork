@@ -198,7 +198,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         L, D, f = main_diag[0].copy(), lower_diag[0].copy(), rhs[0].copy()
 
         if len(main_diag) > 1: # this processor owns more than one timestep, so we reduce
-            for i in range(1, len(main_diag)):
+            for i in range(1, self.nlocal_timesteps):
                 L_next, D_next, f_next = main_diag[i].copy(), lower_diag[i].copy(), rhs[i].copy()
                 
                 D_factored = self.get_factored_matrix(D.copy(), self.ensemble.comm)
@@ -242,7 +242,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         """
         offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1. It has 1 more row than other ranks
 
-        for i in range(offset, len(main_diag)):
+        for i in range(offset, self.nlocal_timesteps):
             L, D, f = main_diag[i].copy(), lower_diag[i].copy(), rhs[i].copy()
 
             # Solve: u_next = D^{-1} (f - L * u_prev)
