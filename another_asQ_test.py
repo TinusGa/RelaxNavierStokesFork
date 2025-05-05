@@ -56,10 +56,12 @@ V = FunctionSpace(mesh, "CG", degree_space)
 x, y = SpatialCoordinate(V.mesh())
 
 u0 = Function(V)
-u0.project(cos(pi*x)*cos(2*pi*y))
+#u0.project(cos(pi*x)*cos(2*pi*y))
+#bcs = []
 
-# bcs = [DirichletBC(V, 0, sub_domain=1)]
-bcs = []
+u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+bcs = [DirichletBC(V, 0, sub_domain=1)]
+
 
 def form_mass(u, v):
     return u*v*dx
@@ -165,6 +167,8 @@ PETSc.Sys.Print(f"Global solve time: {time.time()-start}s")
 
 # final_sol = aaosolver.aaofunc._vec.getArray() # aaosolver.aaofunc._vec.getArray() -> np.array() with final sol?
 # PETSc.Sys.Print(f"{type(aaosolver.aaofunc._vec.getArray())}") 
+
+# PETSc.Sys.Print(f"yvec = {aaofunc._vec.view()}")
 
  # We find the L2-error at each timestep
 q_exact = Function(V)

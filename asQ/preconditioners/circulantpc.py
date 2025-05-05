@@ -93,6 +93,7 @@ class CirculantPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def initialize(self, pc):
+        pc.setOptionsPrefix('circulant_')
         super().initialize(pc, final_initialize=False)
 
         # these were setup by super

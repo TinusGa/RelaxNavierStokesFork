@@ -60,20 +60,21 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
             D = fd.assemble(F1, bcs=self.block_bcs).petscmat
-            L = fd.assemble(F2, bcs=self.block_bcs).petscmat
+            L = fd.assemble(F2).petscmat
 
             if self.temporal_rank == 0 and i == 0:
                 RHS = (1/self.dt) * self.form_mass(u0, v)
                 f = fd.assemble(RHS, bcs=self.block_bcs)
                 f = f.dat._vec # f[1] = L*u[0]
-                self.first_lhs = D.copy()
-                self.first_rhs = f.copy()
+                # self.first_lhs = D.copy()
+                # self.first_rhs = f.copy()
             else:
-                f = u0.dat._vec.copy()
-                f.scale(0.0) # f[i+1] = 0
-                self.diag_matrices.append(D)
-                self.lower_diag_matrices.append(L)
-                self.rhs.append(f)
+                f = self._x[i].dat._vec.copy()
+                f.scale(0.0)
+
+            self.diag_matrices.append(D)
+            self.lower_diag_matrices.append(L)
+            self.rhs.append(f)
 
         self.block_iterations = SharedArray(self.time_partition,
                                             dtype=int,
@@ -94,6 +95,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         y.zero()
 
+        for i in range(self.nlocal_timesteps):
+            self.rhs[i] = x[i].dat._vec.copy()
         # Define the pencil for the current rank for timestep ordering
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
         # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then p0.subshape = (3,10)
@@ -108,15 +111,15 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # This is the first block of the system, which is the first diagonal matrix
         # and the first rhs vector.
         if self.temporal_rank == 0:
-            F = self.get_factored_matrix(self.first_lhs, self.ensemble.comm)
-            u1 = self.first_rhs.duplicate()
-            F.solve(self.first_rhs, u1)
+            F = self.get_factored_matrix(self.diag_matrices[0].copy(), self.ensemble.comm)
+            u1 = self.rhs[0].duplicate()
+            F.solve(self.rhs[0], u1)
 
             local_u1 = u1.getArray()
             self.a0[0,:] = local_u1[:]
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
-            
+        
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
         # ---------------------------------------------------------------------------
@@ -171,7 +174,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         self.forward_substitution(self.diag_matrices, self.lower_diag_matrices, self.rhs, u_prev, y)
 
-        #PETSc.Sys.Print(f"yvec = {y._vec.view()}")
+        PETSc.Sys.Print(f"yvec = {y._vec.view()}")
         #y.copy(self.state_func)
 
 
@@ -195,13 +198,19 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         if len(main_diag) != len(lower_diag) or len(main_diag) != len(rhs):
             raise ValueError("Input lists must be of equal length.")
         
+        # Temporal rank 0 is offset from other ranks by 1
+        offset = 1 if self.temporal_rank == 0 else 0
+        
         # Reduce onto these variables
-        L, D, f = main_diag[0].copy(), lower_diag[0].copy(), rhs[0].copy()
+        L, D, f = main_diag[offset].copy(), lower_diag[offset].copy(), rhs[offset].copy()
 
         if len(main_diag) > 1: # this processor owns more than one timestep, so we reduce
-            for i in range(1, self.nlocal_timesteps):
-                L_next, D_next, f_next = main_diag[i].copy(), lower_diag[i].copy(), rhs[i].copy()
-                
+            for i in range(offset + 1, self.nlocal_timesteps):
+            
+                L_next = main_diag[i].copy()
+                D_next = lower_diag[i].copy()
+                f_next = rhs[i].copy()
+
                 D_factored = self.get_factored_matrix(D.copy(), self.ensemble.comm)
                 L_dense = L.copy()
                 L_dense.convert('dense')
@@ -211,6 +220,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
                 # Compute L <- L_next * D^{-1} * L
                 D_factored.matSolve(L_dense, D_inv_L_dense) # D^{-1} * L and stores in D_inv_L_dense
+                L.convert('dense') # Convert L to dense matrix
+                L.setUp()
+                L.assemble()
                 L_next.matMult(D_inv_L_dense, L) # L <- L_next * D^{-1} * L
 
                 # Compute D <- - D_next
@@ -243,17 +255,21 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         """
         offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1. It has 1 more row than other ranks
 
+
         for i in range(offset, self.nlocal_timesteps):
-            L, D, f = main_diag[i].copy(), lower_diag[i].copy(), rhs[i].copy()
+
+            L = main_diag[i].copy()
+            D = lower_diag[i].copy()
+            f = rhs[i].copy()
 
             # Solve: u_next = D^{-1} (f - L * u_prev)
-            rhs = u_prev.duplicate()
+            rhs_tmp = u_prev.duplicate()
             f.scale(-1.0) # Set f <- -f
-            L.multAdd(u_prev, f, rhs)  # rhs <- L * u_prev - f
-            rhs.scale(-1.0) # rhs <- f - L * u_prev
+            L.multAdd(u_prev, f, rhs_tmp)  # rhs_tmp <- L * u_prev - f
+            rhs_tmp.scale(-1.0) # rhs_tmp <- f - L * u_prev
             F = self.get_factored_matrix(D.copy(), self.ensemble.comm)
-            u_next = rhs.duplicate()
-            F.solve(rhs, u_next)
+            u_next = rhs_tmp.duplicate()
+            F.solve(rhs_tmp, u_next)
 
             u_next_array = u_next.getArray()
             self.a0[i,:] = u_next_array[:]
@@ -266,7 +282,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             L.destroy()
             D.destroy()
             f.destroy()
-            rhs.destroy()
+            rhs_tmp.destroy()
             F.destroy()
             u_next.destroy()
             
