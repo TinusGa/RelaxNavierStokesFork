@@ -69,6 +69,7 @@ class JacobiPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def initialize(self, pc):
+        pc.setOptionsPrefix('aaojacobi_')
         super().initialize(pc, final_initialize=False)
 
         aaofunc = self.aaofunc

@@ -132,12 +132,8 @@ class CirculantPC(AllAtOnceBlockPCBase):
         C1col[:2] = np.array([1, -1])/dt
         C2col[:2] = np.array([theta, 1-theta])
 
-        
-
         self.D1 = np.sqrt(nt)*fft(self.Gam*C1col)
         self.D2 = np.sqrt(nt)*fft(self.Gam*C2col)
-
-        
 
         # Block system setup
         # First need to build the complex function space version of blockV
@@ -243,10 +239,6 @@ class CirculantPC(AllAtOnceBlockPCBase):
             K, D2r, D2i = cpx.derivative(d2, form_function, self.u0, return_z=True)
 
             A = M + K
-
-            #AA = fd.assemble(A).M.handle #.handle
-            #PETSc.Sys.Print(f"ownerships AA {AA.getOwnershipRange()} \n", comm=fd.COMM_SELF)
-            #PETSc.Sys.Print(f"ownership AA {AA.getOwnershipRanges()}", comm=fd.COMM_WORLD)
 
             # The rhs
             L = self.block_rhs

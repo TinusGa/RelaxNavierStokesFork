@@ -9,6 +9,7 @@ from asQ.preconditioners.base import AllAtOnceBlockPCBase
 from asQ.parallel_arrays import SharedArray
 from asQ.allatonce import time_average
 
+
 __all__ = ['CyclicReductionPC']
 
 class CyclicReductionPC(AllAtOnceBlockPCBase):
@@ -55,22 +56,16 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             M = self.form_mass(u, v)
             K = self.form_function(u, v, t0)
 
-            F1 = dt1*M + theta*K # Main diagonal block system
-            F2 = -dt1*M # Lower/off - diagonal block system
-
             # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
-            D = fd.assemble(F1, bcs=self.block_bcs).petscmat
-            L = fd.assemble(F2).petscmat
+            D = fd.assemble(dt1*M + theta*K, bcs=self.block_bcs).petscmat # Main diagonal block system
+            L = fd.assemble(-dt1*M).petscmat # Lower/off - diagonal block system
 
             if self.temporal_rank == 0 and i == 0:
                 RHS = (1/self.dt) * self.form_mass(u0, v)
                 f = fd.assemble(RHS, bcs=self.block_bcs)
                 f = f.dat._vec # f[1] = L*u[0]
-                # self.first_lhs = D.copy()
-                # self.first_rhs = f.copy()
             else:
-                f = self._x[i].dat._vec.copy()
-                f.scale(0.0)
+                f = self._x[i].dat._vec
 
             self.diag_matrices.append(D)
             self.lower_diag_matrices.append(L)
@@ -95,8 +90,9 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         
         y.zero()
 
-        for i in range(self.nlocal_timesteps):
-            self.rhs[i] = x[i].dat._vec.copy()
+        # for i in range(self.nlocal_timesteps):
+        #     self.rhs[i] = x[i].dat._vec.copy()
+        
         # Define the pencil for the current rank for timestep ordering
         # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
         # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then p0.subshape = (3,10)
@@ -374,3 +370,4 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             indices = even_indices
 
         return index_list
+
