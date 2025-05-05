@@ -127,34 +127,7 @@ solver_parameters = {
 #     'pc_python_type': 'asQ.JacobiPC',
 # }
 
-# Solver Parameters for heat equation from RelaxNavierStokes code.
-# Want to transition from above parameters to the ones below.
- 
-# solver_parameters = {'snes_type': 'ksponly',
-#                     'mat_type': 'aij',
-#                     'ksp_type': 'fgmres',
-#                     "ksp_monitor_true_residual": None,
-#                     "ksp_max_it": 100,
-#                     "ksp_gmres_restart": 100,
-#                     "ksp_atol": 1e-6,
-#                     "ksp_rtol": 1e-6,
-#                     'pc_type': 'mg',
-#                     "pc_mg_type": "multiplicative",
-#                     "pc_mg_cycles": "v",
-#                     "mg_levels_ksp_type": "chebyshev",
-#                     "mg_levels_ksp_chebyshev_esteig": "0,0.25,0,1.05",
-#                     "mg_levels_ksp_max_it": 2,
-#                     "mg_levels_ksp_convergence_test": "skip",
-#                     "mg_levels_pc_type": "python",
-#                     "mg_levels_pc_python_type": "firedrake.ASMStarPC",
-#                     "mg_levels_pc_star_construct_dim": 0,
-#                     "mg_levels_pc_star_sub_sub_pc_type": "lu",
-#                     "mg_levels_pc_star_sub_sub_pc_factor_mat_solver_type": "umfpack",
-#                     "mg_coarse_pc_type": "python",
-#                     "mg_coarse_pc_python_type": "firedrake.AssembledPC",
-#                     "mg_coarse_assembled_pc_type": "lu",
-#                     "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
-#                     }
+
 
 aaosolver = AllAtOnceSolver(aaoform, 
                             aaofunc, 

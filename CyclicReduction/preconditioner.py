@@ -19,6 +19,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
     @profiler()
     def initialize(self,pc):
         # Initialize is called once per rank
+        pc.setOptionsPrefix('cyclic_reduction_')
         super().initialize(pc, final_initialize=False)
 
         # All-at-once reference state
