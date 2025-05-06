@@ -170,7 +170,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         self.forward_substitution(self.diag_matrices, self.lower_diag_matrices, self.rhs, u_prev, y)
 
-        PETSc.Sys.Print(f"yvec = {y._vec.view()}")
+        # PETSc.Sys.Print(f"yvec = {y._vec.view()}")
         #y.copy(self.state_func)
 
 

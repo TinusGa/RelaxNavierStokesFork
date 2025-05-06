@@ -1,5 +1,6 @@
 import faulthandler; faulthandler.enable()
 import numpy as np
+import os
 
 from firedrake import *
 import firedrake as fd
@@ -23,11 +24,11 @@ import matplotlib.pyplot as plt
 
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
-    "Number of temporal processors": 4, # Optimal choice is the root of the number of time steps
-    "Number of time steps": 5, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
-    "dt": 0.001,
-    "nx": 32,
-    "ny": 32,
+    "Number of temporal processors": 2, # Optimal choice is the root of the number of time steps
+    "Number of time steps": 33, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
+    "dt": 0.1,
+    "nx": 9,
+    "ny": 9,
     "degree_space": 1,
     "theta": 1,
 }
@@ -47,18 +48,19 @@ ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Create a mesh with nx+1 and ny+1 vertices
 mesh = UnitSquareMesh(nx = nx, ny = ny, comm = ensemble.comm)
+
 n = FacetNormal(mesh)
 
 V = FunctionSpace(mesh, "CG", degree_space)
 x, y = SpatialCoordinate(V.mesh())
 
 u0 = Function(V)
-# u0.project(cos(pi*x)*cos(2*pi*y))
-# bcs = []
+u0.project(cos(pi*x)*cos(2*pi*y))
+bcs = []
 
-bcs = [DirichletBC(V, 0, sub_domain=1)]
+# bcs = [DirichletBC(V, 0, sub_domain=1)]
 
-u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+# u0.project(sin(0.25*pi*x)*cos(2*pi*y))
 
 
 def form_mass(u, v):
@@ -101,23 +103,6 @@ solver_parameters = {
 'pc_python_type': 'asQ.CirculantPC',
 'circulant_block': {'pc_type': 'lu'},
 'circulant_alpha': 1e-4}
-
-# solver_parameters = {
-#     'ksp_monitor': None,
-#     'ksp_converged_rate': None,
-#     'snes_type': 'ksponly',
-#     'mat_type': 'matfree',
-#     'ksp_type': 'richardson',
-#     'ksp_rtol': 1e-10,
-#     'pc_type': 'python',
-#     'pc_python_type': 'asQ.CirculantPC',
-#     'circulant_alpha': 1e-4,
-#     'circulant_block': {
-#         'ksp_rtol': 1e-6,
-#         'ksp_type': 'gmres',
-#         'pc_type': 'ilu',
-#     },
-# }
 
 # solver_parameters = {
 #     'snes_type': 'ksponly',
@@ -172,8 +157,7 @@ start = time.time()
 aaofunc.assign(u0)
 for i in range(1):
     aaosolver.solve()
-    #aaofunc.bcast_field(-1, aaofunc.initial_condition)
-    # aaofunc.assign(aaofunc.initial_condition)
+    # aaofunc.assign(aaofunc.bcast_field(-1, aaofunc.initial_condition))
 
 PETSc.Sys.Print(f"Global solve time: {time.time()-start}s")
 
@@ -243,70 +227,100 @@ for step in range(exact_sol.ntimesteps):
 
 window_postproc(exact_sol)
 
-# set up diagnostic recording
 
-linear_iterations = 0
-nonlinear_iterations = 0
-total_timesteps = 0
-total_windows = 0
+# --------------------------------------------------
+# Plot a GIF of the solution
+# --------------------------------------------------
 
-import argparse
+w = Function(V) # Parallel in space
 
-parser = argparse.ArgumentParser(
-    description='ParaDiag timestepping for scalar advection of a Gaussian bump in a periodic square with DG in space and implicit-theta in time. Based on the Firedrake DG advection example https://www.firedrakeproject.org/demos/DG_advection.py.html',
-    formatter_class=argparse.ArgumentDefaultsHelpFormatter
-)
-parser.add_argument('--nx', type=int, default=16, help='Number of cells along each square side.')
-parser.add_argument('--cfl', type=float, default=0.8, help='Convective CFL number.')
-parser.add_argument('--angle', type=float, default=pi/6, help='Angle of the convective velocity.')
-parser.add_argument('--degree', type=int, default=1, help='Degree of the scalar spaces.')
-parser.add_argument('--theta', type=float, default=theta, help='Parameter for the implicit theta timestepping method.')
-parser.add_argument('--width', type=float, default=0.2, help='Width of the Gaussian bump.')
-parser.add_argument('--nwindows', type=int, default=1, help='Number of time-windows.')
-parser.add_argument('--nslices', type=int, default=2, help='Number of time-slices per time-window.')
-parser.add_argument('--slice_length', type=int, default=2, help='Number of timesteps per time-slice.')
-parser.add_argument('--alpha', type=float, default=0.0001, help='Circulant coefficient.')
-parser.add_argument('--nsample', type=int, default=32, help='Number of sample points for plotting.')
-parser.add_argument('--show_args', action='store_true', help='Output all the arguments.')
-parser.add_argument('--mpeg', action='store_true', help='Create mp4 of timeseries')
+file_dir = "Txts/animate"
 
-args = parser.parse_known_args()
-args = args[0]
+if COMM_WORLD.rank == 0:
+    if os.path.exists(file_dir):
+        for fname in os.listdir(file_dir):
+            fpath = os.path.join(file_dir, fname)
+            if os.path.isfile(fpath):
+                os.remove(fpath)
 
-w = Function(V)
+COMM_WORLD.Barrier()
 
-# The last time-slice will be saving snapshots to create an animation.
-# The layout member describes the time_partition.
-# layout.is_local(i) returns True/False if the timestep index i is on the
-# current time-slice. Here we use -1 to mean the last timestep in the window.
+for step in range(aaofunc.ntimesteps):
+    if aaoform.layout.is_local(step):
+        local_step = aaofunc.transform_index(step, from_range='window')
+        w.assign(aaofunc[local_step])
+        data = w.dat._vec.getArray()
+        filename =  f"{file_dir}/step_{step}_rank_{ensemble.comm.rank}.txt"
+        np.savetxt(filename, w.dat.data_ro)
+
+# Ensure all ranks have written their files before proceeding
+COMM_WORLD.Barrier()
+
+if COMM_WORLD.rank == 0:
+    step_data = {}   # step -> full vector
+    step_chunks = {} # step -> list of (rank, data)
+
+    # Gather all chunks
+    for fname in os.listdir(file_dir):
+        if fname.startswith("step_") and fname.endswith(".txt"):
+            try:
+                parts = fname.replace("step_", "").replace(".txt", "").split("_rank_")
+                step = int(parts[0])
+                rank = int(parts[1])
+            except (IndexError, ValueError):
+                print(f"Skipping invalid file name: {fname}")
+                continue
+
+            filepath = os.path.join(file_dir, fname)
+            try:
+                data = np.loadtxt(filepath)
+                step_chunks.setdefault(step, []).append((rank, data))
+            except Exception as e:
+                print(f"Error loading {fname}: {e}")
+
+    # Join per-step chunks
+    for step, chunks in step_chunks.items():
+        chunks_sorted = [data for rank, data in sorted(chunks)]
+        full_vec = np.concatenate(chunks_sorted)
+        step_data[step] = full_vec
+   
+
+    mesh = UnitSquareMesh(nx = nx, ny = ny, comm = COMM_SELF)
+    U = FunctionSpace(mesh, "CG", degree_space)
+    v = Function(U) # Non-parallel in space
+    x,y = SpatialCoordinate(mesh)
+    # Reconstruct Functions
+    v0 = Function(U)
+    v0.project(cos(pi*x)*cos(2*pi*y))
+    timeseries = [v0.copy()]
+ 
+    for step in sorted(step_data.keys()):
+        f = Function(U)
+        # f.dat.data[:] = step_data[step]
+        f.project(cos(pi*x)*cos(2*pi*y)*np.exp(-5*pi*step*dt))
+        timeseries.append(f.copy())
+    
+    # Generate 20 random functions
+    # timeseries = []
+    # for _ in range(33):
+    #     f = Function(U)
+    #     f.dat.data[:] = np.random.rand(len(f.dat.data))
+    #     timeseries.append(f)
 
 
-# timeseries = [u0.copy()]
+    if True:
+        fn_plotter = fd.FunctionPlotter(mesh, num_sample_points=nx*2)
 
+        fig, axes = plt.subplots()
+        axes.set_aspect('equal')
+        colors = fd.tripcolor(v, num_sample_points=nx*2, vmin=1, vmax=2, axes=axes)
+        fig.colorbar(colors)
 
+        def animate(q):
+            colors.set_array(fn_plotter(q))
+            return colors,
 
-# for step in range(aaofunc.ntimesteps):
-#     if aaoform.layout.is_local(step):
-#         local_step = aaofunc.transform_index(step, from_range='window')
-#         w.assign(aaofunc[local_step])
-#         timeseries.append(w.copy(deepcopy=True))
+        interval = 1e2
+        animation = FuncAnimation(fig, animate, frames=timeseries)
 
-
-
-# # Make an animation from the snapshots we collected and save it to periodic.mp4.
-# if True:
-#     PETSc.Sys.Print("Creating mp4 of timeseries")
-#     fn_plotter = fd.FunctionPlotter(mesh, num_sample_points=args.nsample)
-
-#     fig, axes = plt.subplots()
-#     axes.set_aspect('equal')
-#     colors = fd.tripcolor(w, num_sample_points=args.nsample, vmin=1, vmax=2, axes=axes)
-#     fig.colorbar(colors)
-
-#     def animate(q):
-#         colors.set_array(fn_plotter(q))
-
-#     interval = 1e2
-#     animation = FuncAnimation(fig, animate, frames=timeseries, interval=interval)
-
-#     animation.save("periodic.gif", writer="ffmpeg")
+        animation.save("periodic.gif", writer="ffmpeg")

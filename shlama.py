@@ -1,14 +1,5 @@
-# from CyclicReduction import preconditioner
-# from petsc4py import PETSc
-# pc = PETSc.PC().create()
-# pc.setType("python")
-# pc.setPythonContext(preconditioner())
-# pc.setFromOptions()
-# print(pc.view())
+mydikk = {}
 
-#import firedrake as fd
-import numpy as np
+mydikk['name'] = {'rank':'shlama'}
 
-yo = np.arange(10)
-
-print(yo)
+print(mydikk)
