@@ -25,14 +25,14 @@ class ProblemParameters:
     def __init__(self):
         self.N = 9 # Number of time steps
         self.dt = 0.001 #Specified instead of end time
-        self.M = 9 # Number of spatial points
-        self.Mbase = 4 # Number of spatial points in base mesh
+        self.M = 10 # Number of spatial points
+        self.Mbase = 5 # Number of spatial points in base mesh
         self.Mref = 2 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 1,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
-        self.Pt = 2 # Processors in time
+        self.Pt = 4 # Processors in time
         self.theta = 1 # Theta parameter for the time-stepping scheme
 
 parameters = ProblemParameters()
@@ -46,7 +46,7 @@ ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 # Define mesh
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
 base_mesh = UnitSquareMesh(parameters.Mbase,parameters.Mbase,
-                           distribution_parameters=distribution_parameters,comm = COMM_WORLD)
+                           distribution_parameters=distribution_parameters,comm = ensemble.comm)
 spatial_mesh = MeshHierarchy(base_mesh,parameters.Mref)
 
 mesh = spatial_mesh[-1]
@@ -75,36 +75,31 @@ solver_parameters = {'snes_type': 'ksponly',
                     'mat_type': 'aij',
                     'ksp_type': 'fgmres',
                     "ksp_monitor_true_residual": None,
-                    "ksp_max_it": 1,
+                    "ksp_max_it": 0,
                     "ksp_gmres_restart": 100,
                     "ksp_atol": 1e-6,
                     "ksp_rtol": 1e-6,
-                    'pc_type': 'mg',
-                    "pc_mg_type": "multiplicative",
-                    "pc_mg_cycles": "v",
-                    "mg_levels_ksp_type": "chebyshev",
-                    "mg_levels_ksp_chebyshev_esteig": "0,0.25,0,1.05",
-                    "mg_levels_ksp_max_it": 2,
-                    "mg_levels_ksp_convergence_test": "skip",
-                    # "mg_levels_ksp_type": "richardson", # ALTERNATIVE TO CHEBYSHEV 
-                    # "mg_levels_ksp_richardson_scale": 0.6, # ALTERNATIVE TO CHEBYSHEV 
-                    "mg_levels_pc_type": "python",
-                    # "mg_levels_pc_python_type": "CyclicReduction.ASMStarPC", # CUSTOM
-                    "mg_levels_pc_python_type": "CyclicReduction.CyclicReductionPC2", # CUSTOM
-                    # "mg_levels_pc_python_type": "firedrake.ASMStarPC", # We have to call this within our custom PC. Otherwise PETSc will use PCASM. 
-                    # "mg_levels_pc_star_construct_dim": 0,
-                    # "mg_levels_pc_star_sub_sub_pc_type":"python", # CUSTOM
-                    # "mg_levels_pc_star_sub_sub_pc_python_type": "CyclicReduction.CyclicReductionPC2", # CUSTOM
-                    # "mg_levels_pc_star_sub_sub_pc_type": "lu",
-                    # "mg_levels_pc_star_sub_sub_pc_factor_mat_solver_type": "umfpack",
-                    "mg_coarse_pc_type": "python",
-                    "mg_coarse_pc_python_type": "firedrake.AssembledPC",
-                    "mg_coarse_assembled_pc_type": "lu",
-                    "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
+                    "pc_type":"python",
+                    "pc_python_type": "CyclicReduction.Setup",
+                    "pc_python_mg": {'pc_type':'mg',
+                                     'pc_mg_type':'multiplicative',
+                                     'pc_mg_cycles':'v',
+                                     'mg_levels_ksp_type':'chebyshev',
+                                     'mg_levels_ksp_chebyshev_esteig':'0,0.25,0,1.05',
+                                     'mg_levels_ksp_max_it':2,
+                                     'mg_levels_ksp_convergence_test':'skip',
+                                     'mg_levels_pc_type':'python',
+                                     'mg_levels_pc_python_type':'CyclicReduction.ASMStarPC',
+                                     'mg_levels_pc_star_construct_dim':0,
+                                     'mg_levels_pc_star_sub_sub_pc_type':'python',
+                                     'mg_levels_pc_star_sub_sub_pc_python_type':'CyclicReduction.CyclicReductionPC2',
+                                     'mg_coarse_pc_type':'python',
+                                     'mg_coarse_pc_python_type':'lu',
+                                     'mg_coarse_pc_factor_mat_solver_type':'mumps',
+                                    },
                     }
 
-AllAtOnce = False
-Extruded = True
+AllAtOnce = True
 
 if AllAtOnce:
     aaofunc = AllAtOnceFunction(ensemble, time_partition, U)
@@ -116,48 +111,10 @@ if AllAtOnce:
                             form_mass,
                             form_function, 
                             bcs=bcs)
+    
     solver = AllAtOnceSolver(aaoform, 
                             aaofunc, 
                             solver_parameters)
-elif Extruded:
-    mh = ExtrudedMeshHierarchy(spatial_mesh, parameters.N*parameters.dt,
-                        base_layer = parameters.N,
-                        refinement_ratio=1,
-                        extrusion_type='uniform')
-    mesh = mh[-1]
-    n = FacetNormal(mesh)
-    
-    #Define function space
-    space_element = FiniteElement("CG", triangle, parameters.degree['space'])
-    time_element = FiniteElement("DG", interval, parameters.degree['time'])
-    spacetime_element = TensorProductElement(space_element,time_element)
-    U = FunctionSpace(mesh,spacetime_element)
-
-    #Define initial condition
-    x, y, t = SpatialCoordinate(U.mesh())
-    u0 = interpolate(sin(pi*x)+cos(2*pi*y), U)
-
-    #Set up residual
-    u = Function(U)
-    phi = TestFunction(U)
-
-    gradu = as_vector([u.dx(0),
-                       u.dx(1)])
-    gradphi = as_vector([phi.dx(0),
-                         phi.dx(1)])
-    
-    def plus(v):
-        return -0.5*jump(v,n[2]) + avg(v)
-    
-    F_space = inner(gradu,gradphi) * dx(degree=16)
-    F_time = u.dx(2) * phi * dx(degree=16) - jump(u,n[2]) * plus(phi) * dS_h(degree=16)
-    F_ic = 0.5*(u-u0)*phi*ds_b
-
-    F = F_space + F_time + F_ic
-
-    problem = NonlinearVariationalProblem(F, u)
-    solver = NonlinearVariationalSolver(problem, solver_parameters=solver_parameters)
-
 else:
     u = Function(U)
     v = TestFunction(U)
@@ -172,10 +129,7 @@ end_setup = time()
 PETSc.Sys.Print(f"Finished setup in {end_setup - start_setup:.2f} s")
 
 start_solve = time()
-try:
-    solver.solve()
-except firedrake.exceptions.ConvergenceError as e:
-    PETSc.Sys.Print("Solver failed to converge, but continuing anyway.")
+solver.solve()
 end_solve = time()
 
 PETSc.Sys.Print(f"Finished solve in {end_solve - start_solve:.2f} s")

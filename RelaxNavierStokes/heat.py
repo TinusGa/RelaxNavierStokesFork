@@ -21,7 +21,7 @@ class parameters:
         self.solver = None
 
 
-#Solve the heat equation with timings
+# Solve the heat equation with timings
 def heat(para=parameters):
 
     start = time()
