@@ -415,5 +415,6 @@ class CirculantPC(AllAtOnceBlockPCBase):
             self.temporal_rank = self.ensemble.ensemble_comm.rank
             #PETSc.Sys.Print(f"yvec ownership : {yvec.getOwnershipRange()}. parray shape : {parray.reshape(-1).real.shape}. Temporal rank: {self.temporal_rank}, Spatial rank: {self.spatial_rank}\n", comm=fd.COMM_SELF)
             yvec.array[:] = parray.reshape(-1).real
-        
+
+        y._vec.view()
         ################

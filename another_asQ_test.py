@@ -26,10 +26,10 @@ import matplotlib.pyplot as plt
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
     "Number of temporal processors": 4, # Optimal choice is the root of the number of time steps
-    "Number of time steps": 33, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
-    "dt": 0.003,
-    "nx": 9,
-    "ny": 9,
+    "Number of time steps": 9, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
+    "dt": 0.001,
+    "nx": 4,
+    "ny": 4,
     "degree_space": 1,
     "theta": 1,
 }
@@ -80,30 +80,41 @@ aaoform = AllAtOnceForm(aaofunc,
                         bcs=bcs)
 
 # asQ solver parameters
-# solver_parameters = {
-#     'snes_type': 'ksponly',
-#     'mat_type': 'mpiaij',
-#     'ksp_type': 'richardson',
-#     'ksp_max_it': 0, # Since Cyclic Reduction is a direct solver/method
-#     #'ksp_rtol': 1e-12,
-#     'ksp_monitor': None,
-#     'ksp_converged_rate': None,
-#     'pc_type': 'python',
-#     'pc_python_type': 'CyclicReduction.CyclicReductionPC',
-#     'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
-# }
-
 solver_parameters = {
-'snes_type': 'ksponly',
-'mat_type': 'matfree',
-'ksp_type': 'richardson',
-'ksp_rtol': 1e-12,
-'ksp_monitor': None,
-'ksp_converged_rate': None,
-'pc_type': 'python',
-'pc_python_type': 'asQ.CirculantPC',
-'circulant_block': {'pc_type': 'lu'},
-'circulant_alpha': 1e-4}
+    'snes_type': 'ksponly',
+    'mat_type': 'matfree',
+    'ksp_type': 'preonly',
+    # 'ksp_max_it': 0, # Since Cyclic Reduction is a direct solver/method
+    #'ksp_rtol': 1e-12,
+    'ksp_monitor': None,
+    'ksp_converged_rate': None,
+    'pc_type': 'python',
+    'pc_python_type': 'CyclicReduction.CyclicReductionPC',
+    'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
+}
+
+# solver_parameters = {
+# 'snes_type': 'ksponly',
+# 'mat_type': 'matfree',
+# 'ksp_type': 'richardson',
+# 'ksp_rtol': 1e-12,
+# 'ksp_monitor': None,
+# 'ksp_converged_rate': None,
+# 'pc_type': 'python',
+# 'pc_python_type': 'asQ.CirculantPC',
+# 'circulant_block': {'pc_type': 'lu'},
+# 'circulant_alpha': 1e-4}
+
+# solver_parameters = {
+# 'snes_type': 'ksponly',
+# 'mat_type': 'matfree',
+# 'ksp_type': 'preonly',
+# 'ksp_monitor': None,
+# 'ksp_converged_rate': None,
+# 'pc_type': 'python',
+# 'pc_python_type': 'asQ.CirculantPC',
+# 'circulant_block': {'pc_type': 'lu'},
+# 'circulant_alpha': 1e-4}
 
 # solver_parameters = {
 #     'snes_type': 'ksponly',
@@ -228,6 +239,7 @@ for step in range(exact_sol.ntimesteps):
 
 window_postproc(exact_sol)
 
+# aaosolver.aaofunc._vec.view()
 
 # --------------------------------------------------
 # Plot a GIF of the solution
@@ -244,118 +256,31 @@ if COMM_WORLD.rank == 0:
     os.makedirs(f"{file_dir}", exist_ok=True)
 
 COMM_WORLD.Barrier()
+
 # Only first temporal rank handles file output
 if ensemble.ensemble_comm.rank == 0:
     vtkfile = VTKFile(f"{file_dir}/u_t.pvd", comm=ensemble.comm)
 
 # Sending data from all time ranks
 for step in range(aaofunc.ntimesteps):
-    mpi_requests = []
     if aaoform.layout.is_local(step):
         local_step = aaofunc.transform_index(step, from_range='window')
         w_local = Function(V)
         w_local.assign(aaofunc[local_step])
         w_local.rename("u")
-        request_send = ensemble.isend(w_local, dest=0, tag=step)
-        mpi_requests.extend(request_send)
+        if ensemble.ensemble_comm.rank != 0:
+            ensemble.send(w_local, dest=0, tag=step)
+        else:
+            w_recv = w_local.copy(deepcopy=True)  # if rank 0 owns it, just copy
 
-    # Receiving and writing at temporal rank 0
     if ensemble.ensemble_comm.rank == 0:
-        w_recv = Function(V, name="u")
-        for rank in range(ensemble.ensemble_comm.size):
-            request_recv = ensemble.irecv(w_recv, source=rank, tag=step)
-            mpi_requests.extend(request_recv)
+        if not aaoform.layout.is_local(step):
+            w_recv = Function(V, name="u")
+            ensemble.recv(w_recv, source=MPI.ANY_SOURCE, tag=step)
 
-    # Wait for all sends and receives
-    MPI.Request.Waitall(mpi_requests)
-
-    # Write only on rank 0
-    if ensemble.ensemble_comm.rank == 0:
         vtkfile.write(w_recv, time=step * dt)
 
 
-
-
-def write_timeseries(pdg,
-                     file_name='paraview_output',
-                     function_names=[],
-                     frequency=1,
-                     time_scale=1):
-    """Writes timesteps of a paradiag object to a timeseries vtk file.
-
-    :arg pdg: the paradiag object
-    :arg file_name: optional name for the file
-    :arg function_names: a list of names for each function in the (mixed) function space at each timestep
-    :arg frequency: frequency at which to write timesteps
-    :arg time_scale: coefficient on timestamp for each timestep (eg 1./60 for timestamp in minutes)
-    """
-
-    # TODO: This implementation assumes that a MixedFunctionSpace is used at each timestep
-    #       Once there is an example using a plain FunctionSpace this will need updating
-
-    # if given, check we have the right number of function_names
-    if (len(function_names) != 0) and (len(function_names) != pdg.ncpts):
-        raise ValueError("function_names must be same length as pdg.ncpts,"
-                         + f" {len(function_names)} provided, {pdg.ncpts} needed.")
-
-    # functions for writing to file
-    functions = []
-    for cpt in range(pdg.ncpts):
-        V = pdg.W.subfunctions[cpt]
-        if len(function_names) != 0:
-            functions.append(fd.Function(V, name=function_names[cpt]))
-        else:
-            functions.append(fd.Function(V))
-
-    # only first time slice writes to file
-    if pdg.rT == 0:
-        outfile = fd.File(file_name+".pvd",
-                          comm=pdg.ensemble.comm)
-
-    # functions from entire local time-slice
-    walls = pdg.w_all.subfunctions
-
-    # first timestep of this local time-slice
-    timestep_begin = sum(pdg.M[:pdg.rT])
-
-    for timestep in range(0, sum(pdg.M), frequency):
-
-        # which rank is this timestep on?
-        for r in range(len(pdg.M)):
-            t0 = sum(pdg.M[:r])
-            t1 = t0 + pdg.M[r]
-            if (t0 <= timestep) and (timestep < t1):
-                time_rank = r
-
-        mpi_requests = []
-        # if timestep on this time-rank, send functions
-        if time_rank == pdg.rT:
-
-            # index of first split function in this timestep
-            index0 = pdg.ncpts*(timestep - timestep_begin)
-
-            # send functions in timestep to time-rank 0
-            for cpt in range(pdg.ncpts):
-                request_send = pdg.ensemble.isend(walls[index0+cpt],
-                                                  dest=0,
-                                                  tag=timestep)
-                mpi_requests.extend(request_send)
-
-        # if time-rank 0: recv functions
-        if pdg.rT == 0:
-
-            # recv functions in timestep
-            for cpt in range(pdg.ncpts):
-                request_recv = pdg.ensemble.irecv(functions[cpt],
-                                                  source=time_rank,
-                                                  tag=timestep)
-                mpi_requests.extend(request_recv)
-
-        MPI.Request.Waitall(mpi_requests)
-
-        # if time-rank 0: write to file
-        if pdg.rT == 0:
-            outfile.write(*functions, time=time_scale*timestep*pdg.dt)
 
 
 # w = Function(V) # Parallel in space
