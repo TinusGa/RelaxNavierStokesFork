@@ -213,6 +213,11 @@ class AllAtOnceFunctionBase(TimePartitionMixin):
         else:
             sendrecv = self.ensemble.isendrecv
 
+        sendvec = self.unext.dat._vec
+        recvvec = self.uprev.dat._vec
+
+        # PETSc.Sys.Print(f"Rank {rank} sending to {dst} and receiving from {src}. Size unext {sendvec.getLocalSize()} uprev {recvvec.getLocalSize()}", comm = fd.COMM_SELF)
+
         return sendrecv(fsend=self.unext, dest=dst, sendtag=rank,
                         frecv=self.uprev, source=src, recvtag=src)
 

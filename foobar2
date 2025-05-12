@@ -1,0 +1,338 @@
+****************************************************************************************************************************************************************
+***                                WIDEN YOUR WINDOW TO 160 CHARACTERS.  Use 'enscript -r -fCourier9' to print this document                                 ***
+****************************************************************************************************************************************************************
+
+------------------------------------------------------------------ PETSc Performance Summary: ------------------------------------------------------------------
+
+
+
+      ##########################################################
+      #                                                        #
+      #                       WARNING!!!                       #
+      #                                                        #
+      #   This code was compiled with a debugging option.      #
+      #   To get timing results run ./configure                #
+      #   using --with-debugging=no, the performance will      #
+      #   be generally two or three times faster.              #
+      #                                                        #
+      ##########################################################
+
+
+/home/tinuskg/Desktop/RelaxNavierStokesFork/another_asQ_test.py on a arch-firedrake-default named LAPTOP-B46JGGE5 with 8 processes, by tinuskg on Mon May 12 09:55:02 2025
+Using PETSc Release Version 3.23.0, unknown
+
+                         Max       Max/Min     Avg       Total
+Time (sec):           1.708e+01     1.000   1.708e+01
+Objects:              0.000e+00     0.000   0.000e+00
+Flops:                2.605e+08     1.077   2.441e+08  1.953e+09
+Flops/sec:            1.525e+07     1.077   1.429e+07  1.143e+08
+Memory (bytes):       2.047e+07     1.015   2.021e+07  1.617e+08
+MPI Msg Count:        0.000e+00     0.000   0.000e+00  0.000e+00
+MPI Msg Len (bytes):  0.000e+00     0.000   0.000e+00  0.000e+00
+MPI Reductions:       3.650e+02     1.000
+
+Flop counting convention: 1 flop = 1 real number operation of type (multiply/divide/add/subtract)
+                            e.g., VecAXPY() for real vectors of length N --> 2N flops
+                            and VecAXPY() for complex vectors of length N --> 8N flops
+
+Summary of Stages:   ----- Time ------  ----- Flop ------  --- Messages ---  -- Message Lengths --  -- Reductions --
+                        Avg     %Total     Avg     %Total    Count   %Total     Avg         %Total    Count   %Total
+ 0:      Main Stage: 1.7083e+01 100.0%  1.9531e+09 100.0%  0.000e+00   0.0%  0.000e+00        0.0%  3.460e+02  94.8%
+
+------------------------------------------------------------------------------------------------------------------------
+See the 'Profiling' chapter of the users' manual for details on interpreting output.
+Phase summary info:
+   Count: number of times phase was executed
+   Time and Flop: Max - maximum over all processors
+                  Ratio - ratio of maximum to minimum over all processors
+   Mess: number of messages sent
+   AvgLen: average message length (bytes)
+   Reduct: number of global reductions
+   Global: entire computation
+   Stage: stages of a computation. Set stages with PetscLogStagePush() and PetscLogStagePop().
+      %T - percent time in this phase         %F - percent flop in this phase
+      %M - percent messages in this phase     %L - percent message lengths in this phase
+      %R - percent reductions in this phase
+   Total Mflop/s: 10e-6 * (sum of flop over all processors)/(max time over all processors)
+------------------------------------------------------------------------------------------------------------------------
+
+
+      ##########################################################
+      #                                                        #
+      #                       WARNING!!!                       #
+      #                                                        #
+      #   This code was compiled with a debugging option.      #
+      #   To get timing results run ./configure                #
+      #   using --with-debugging=no, the performance will      #
+      #   be generally two or three times faster.              #
+      #                                                        #
+      ##########################################################
+
+
+Event                Count      Time (sec)     Flop                              --- Global ---  --- Stage ----  Total
+                   Max Ratio  Max     Ratio   Max  Ratio  Mess   AvgLen  Reduct  %T %F %M %L %R  %T %F %M %L %R Mflop/s
+------------------------------------------------------------------------------------------------------------------------
+
+--- Event Stage 0: Main Stage
+
+BuildTwoSided          1 1.0 3.3334e-05 3.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+BuildTwoSidedF         1 1.0 5.3704e-05 3.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SFSetGraph             1 1.0 1.8686e-05 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecTDot              476 1.0 4.8373e-04 1.3 6.43e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0 10362
+VecNorm              240 1.0 4.5510e-01 1.0 4.11e+05 1.0 0.0e+00 0.0e+00 8.0e+00  3  0  0  0  2   3  0  0  0  2     7
+VecScale              97 1.0 4.6636e-04 1.8 6.56e+04 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0  1125
+VecCopy              374 1.0 2.7331e-02 2.2 0.00e+00 0.0 0.0e+00 0.0e+00 1.4e+01  0  0  0  0  4   0  0  0  0  4     0
+VecSet                34 1.0 1.5769e-04 1.7 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+VecAXPY              443 1.0 2.5628e-01 2.7 6.42e+05 1.0 0.0e+00 0.0e+00 2.0e+00  1  0  0  0  1   1  0  0  0  1    20
+VecAYPX              171 1.0 2.2485e-04 1.1 2.52e+05 1.0 0.0e+00 0.0e+00 2.0e+00  0  0  0  0  1   0  0  0  0  1  8740
+MatMult              239 1.0 7.5372e-01 1.0 7.39e+06 1.0 0.0e+00 0.0e+00 1.4e+01  4  3  0  0  4   4  3  0  0  4    77
+MatMultAdd            64 1.0 6.4214e-02 52.9 1.48e+06 1.0 0.0e+00 0.0e+00 0.0e+00  0  1  0  0  0   0  1  0  0  0   185
+MatSolve             303 1.0 8.7426e-02 3.2 6.04e+06 1.0 0.0e+00 0.0e+00 0.0e+00  0  2  0  0  0   0  2  0  0  0   543
+MatLUFactorSym        65 1.0 1.8133e-01 4.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatLUFactorNum        65 1.0 1.0610e-01 1.9 8.67e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0    65
+MatCholFctrNum        34 1.0 1.6246e-03 1.3 2.30e+04 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   110
+MatICCFactorSym       34 1.0 1.3711e-03 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatConvert           194 1.0 1.1467e-01 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+MatScale              31 1.0 6.2029e-04 1.3 1.40e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0  1810
+MatAssemblyBegin     433 1.0 4.9525e-04 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 4.0e+00  0  0  0  0  1   0  0  0  0  1     0
+MatAssemblyEnd       433 1.0 5.9970e-03 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 4.0e+00  0  0  0  0  1   0  0  0  0  1     0
+MatGetRowIJ           34 1.0 3.5076e-05 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatGetOrdering        34 1.0 1.8649e-03 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatMatSolve           31 1.0 4.2012e-01 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  2  0  0  0  0   2  0  0  0  0     0
+MatMatMultSym         31 1.0 5.5033e-04 1.9 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatMatMultNum         31 1.0 7.0924e-02 1.3 1.90e+08 1.0 0.0e+00 0.0e+00 0.0e+00  0 78  0  0  0   0 78  0  0  0 21397
+PCSetUp              100 1.0 1.7786e+00 1.1 1.17e+07 1.0 0.0e+00 0.0e+00 5.3e+01 10  5  0  0 15  10  5  0  0 15    51
+PCSetUpOnBlocks       34 1.0 7.2761e-03 1.2 2.30e+04 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0    25
+PCApply              239 1.0 1.2979e+00 1.0 1.98e+08 1.0 0.0e+00 0.0e+00 1.0e+01  8 81  0  0  3   8 81  0  0  3  1222
+KSPSetUp              35 1.0 1.1463e-03 1.6 0.00e+00 0.0 0.0e+00 0.0e+00 2.0e+00  0  0  0  0  1   0  0  0  0  1     0
+KSPSolve              35 1.0 2.5579e+00 1.0 2.07e+08 1.0 0.0e+00 0.0e+00 6.2e+01 15 85  0  0 17  15 85  0  0 18   647
+DMPlexBuFrCeLi         1 1.0 1.4585e-03 1.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexBuCoFrCeLi       1 1.0 1.3613e-04 1.6 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexInterp           1 1.0 1.1570e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexStratify         2 1.0 1.6525e-03 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+DMPlexSymmetrize       2 1.0 1.0863e-03 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+SNESSolve             35 1.0 5.4804e+00 1.0 2.24e+08 1.0 0.0e+00 0.0e+00 1.7e+02 32 91  0  0 47  32 91  0  0 50   326
+SNESSetUp             35 1.0 5.8852e-03 1.5 0.00e+00 0.0 0.0e+00 0.0e+00 2.0e+00  0  0  0  0  1   0  0  0  0  1     0
+SNESFunctionEval      35 1.0 1.0249e+00 1.0 5.73e+06 1.0 0.0e+00 0.0e+00 6.0e+00  6  2  0  0  2   6  2  0  0  2    44
+SNESJacobianEval      35 1.0 3.5692e-03 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 2.2e+01  0  0  0  0  6   0  0  0  0  6     0
+firedrake              1 1.0 1.3913e+01 1.2 2.61e+08 1.1 0.0e+00 0.0e+00 3.3e+02 75 100  0  0 90  75 100  0  0 95   140
+firedrake.__init__       1 1.0 8.9912e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  5  0  0  0  0   5  0  0  0  0     0
+firedrake.utility_meshes.UnitSquareMesh       1 1.0 2.3451e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.utility_meshes.SquareMesh       1 1.0 2.3424e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.utility_meshes.RectangleMesh       1 1.0 2.3400e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+CreateMesh             3 1.0 2.8304e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.mesh.MeshTopology._set_partitioner       1 1.0 6.7030e-06 1.6 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.mesh.MeshTopology._get_partitioner       1 1.0 5.3083e-05 9.7 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ufl_expr.FacetNormal       1 1.0 2.4185e-01 2.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+Mesh: numbering        1 1.0 1.5857e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Mesh: reorder          1 1.0 1.3907e-03 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+CreateFunctionSpace     516 258.0 8.6632e-01 10.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.functionspace.make_scalar_element     773 386.5 3.3208e-02 132.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.functionspaceimpl.FunctionSpace.__init__    6116 1.2 1.3747e+00 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  6  0  0  0  0   6  0  0  0  0     0
+firedrake.functionspacedata.get_shared_data    6116 1.2 9.8172e-01 2.9 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0     0
+firedrake.functionspacedata.FunctionSpaceData.__init__    6116 1.2 9.5080e-01 3.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0     0
+FunctionSpaceData: CreateElement   12232 1.2 6.2904e-01 4.8 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.mesh.MeshTopology._facets       2 1.0 1.3583e-01 3.6 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.mesh._Facets.__init__       2 1.0 1.7542e-02 38.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.dmhooks.set_function_space      76 1.0 2.4472e-02 1.6 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.function.Function.__init__    2047 2.8 2.5237e-01 6.8 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.bcs.BCBase.__init__      68 1.0 1.3062e-02 42.9 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.function.Function.project      34 1.0 5.8957e-01 1.1 2.50e+07 1.0 0.0e+00 0.0e+00 0.0e+00  3 10  0  0  0   3 10  0  0  0   331
+firedrake.projection.project      34 1.0 5.8869e-01 1.1 2.50e+07 1.0 0.0e+00 0.0e+00 0.0e+00  3 10  0  0  0   3 10  0  0  0   331
+firedrake.projection.Projector      34 1.0 1.3618e-02 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ufl_expr.TrialFunction      67 1.0 2.6353e-03 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ufl_expr.TestFunction     103 1.0 5.4737e-03 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.assemble.assemble     616 6.2 3.8177e+00 1.9 4.25e+07 1.7 0.0e+00 0.0e+00 0.0e+00 13 11  0  0  0  13 11  0  0  0    56
+firedrake.tsfc_interface.compile_form     136 1.0 7.4871e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  4  0  0  0  0   4  0  0  0  0     0
+pyop2: cache wrapper    2592 4.4 1.6881e+00 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  8  0  0  0  0   8  0  0  0  0     0
+firedrake.functionspacedata.FunctionSpaceData.get_map    3165 2.9 1.2885e-02 2.8 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+CreateSparsity         1 1.0 3.5711e-03 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+MatZeroInitial       100 1.0 9.9596e-02 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.mesh.AbstractMeshTopology.measure_set     200 1.0 1.5021e-03 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.mesh.AbstractMeshTopology.cell_subset     200 1.0 5.6998e-04 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+ParLoopExecute       714 3.1 1.0486e+00 1.5 5.82e+07 1.5 0.0e+00 0.0e+00 0.0e+00  5 17  0  0  0   5 17  0  0  0   321
+Parloop_Cells_wrap_form00_cell_integral     200 1.0 1.8006e-01 1.3 1.44e+07 1.0 0.0e+00 0.0e+00 0.0e+00  1  6  0  0  0   1  6  0  0  0   621
+pyop2.compilation.load      41 1.0 5.5834e-01 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  3  0  0  0  0   3  0  0  0  0     0
+ParLoopRednBegin     714 3.1 5.1522e-03 2.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+ParLoopRednEnd       714 3.1 1.5392e-03 3.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.linear_solver.LinearSolver.__init__      34 1.0 1.1665e-01 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.cofunction.Cofunction.__init__     611 1.0 1.0928e-01 3.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.variational_solver.LinearVariationalProblem.__init__      34 1.0 3.1092e-02 1.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ufl_expr.action      35 1.0 1.6255e-01 1.6 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.variational_solver.NonlinearVariationalProblem.__init__      34 1.0 1.3037e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ufl_expr.derivative      35 1.0 1.9943e-02 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.variational_solver.NonlinearVariationalSolver.__init__      34 1.0 7.7927e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.solving_utils._SNESContext.__init__      34 1.0 4.1331e-02 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_Cells_wrap_form0_cell_integral      72 1.0 1.1805e-01 1.6 1.60e+07 1.0 0.0e+00 0.0e+00 0.0e+00  1  6  0  0  0   1  6  0  0  0  1063
+firedrake.halo.Halo.local_to_global_begin     129 1.3 3.2393e-04 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.halo.Halo.local_to_global_end     129 1.3 2.1750e-04 1.7 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.linear_solver.LinearSolver.solve      34 1.0 1.0630e-01 1.1 5.80e+06 1.0 0.0e+00 0.0e+00 0.0e+00  1  2  0  0  0   1  2  0  0  0   425
+firedrake.function.Function.assign     320 1.0 5.1640e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.assign.Assigner.assign     149 1.0 2.8677e-02 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.cofunction.Cofunction.assign     101 1.0 5.5961e-03 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.variational_solver.NonlinearVariationalSolver.solve      34 1.0 7.7439e-02 1.1 5.80e+06 1.0 0.0e+00 0.0e+00 0.0e+00  0  2  0  0  0   0  2  0  0  0   584
+asQ.allatonce.function.AllAtOnceFunction.__init__       6 1.0 2.1682e+00 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 1.0e+02 12  0  0  0 28  12  0  0  0 29     0
+asQ.allatonce.function.AllAtOnceFunctionBase.__init__      10 1.0 3.4553e+00 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 1.7e+02 20  0  0  0 47  20  0  0  0 49     0
+firedrake.functionspace.MixedFunctionSpace     320 1.0 2.7918e+00 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00 16  0  0  0  0  16  0  0  0  0     0
+asQ.allatonce.form.AllAtOnceForm.__init__       2 1.0 9.7704e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 3.4e+01  6  0  0  0  9   6  0  0  0 10     0
+firedrake.constant.Constant.assign      68 1.0 1.2575e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.constant.Constant.evaluate     136 1.0 5.6052e-04 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.functionspaceimpl.WithGeometryBase.sub      66 1.0 1.2958e-04 1.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+ApplyBC               99 1.0 3.9037e-02 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.function.Function.sub     132 1.0 2.7768e-04 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.functionspacedata.FunctionSpaceData.boundary_nodes      67 1.0 2.5237e-02 1.6 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.function.AllAtOnceCofunction.__init__       4 1.0 1.3122e+00 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 6.8e+01  8  0  0  0 19   8  0  0  0 20     0
+asQ.allatonce.solver.AllAtOnceSolver.__init__       1 1.0 1.5783e+00 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 9.8e+01  9  0  0  0 27   9  0  0  0 28     0
+asQ.allatonce.form.AllAtOnceForm.copy       1 1.0 8.4465e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 3.4e+01  5  0  0  0  9   5  0  0  0 10     0
+asQ.allatonce.function.AllAtOnceFunctionBase.copy       4 1.0 1.2601e+00 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 6.8e+01  7  0  0  0 19   7  0  0  0 20     0
+asQ.allatonce.function.AllAtOnceFunctionBase.assign       7 1.0 2.2910e-02 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 8.0e+00  0  0  0  0  2   0  0  0  0  2     0
+asQ.allatonce.function.AllAtOnceFunctionBase._vs_op       4 1.0 1.2500e-02 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.function.AllAtOnceFunctionBase.update_time_halos       7 1.0 8.6958e-03 2.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.function.AllAtOnceFunctionBase.__getitem__     205 1.0 1.6276e-03 1.8 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ensemble.Ensemble.sendrecv       7 1.0 6.5974e-03 3.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.jacobian.AllAtOnceJacobian.__init__       1 1.0 7.2511e-01 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 3.4e+01  4  0  0  0  9   4  0  0  0 10     0
+asQ.allatonce.jacobian.AllAtOnceJacobian.update       2 1.0 9.6285e-04 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 4.0e+00  0  0  0  0  1   0  0  0  0  1     0
+asQ.allatonce.jacobian.AllAtOnceJacobian.petsc_mat       1 1.0 6.5295e-02 201.7 0.00e+00 0.0 0.0e+00 0.0e+00 1.4e+01  0  0  0  0  4   0  0  0  0  4     0
+asQ.preconditioners.base.AllAtOncePCBase.__init__       1 1.0 4.2480e-06 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.solver.AllAtOnceSolver.solve       1 1.0 5.4459e+00 1.0 2.18e+08 1.0 0.0e+00 0.0e+00 1.8e+02 32 89  0  0 49  32 89  0  0 52   320
+asQ.allatonce.function.AllAtOnceFunctionBase.global_vec       1 1.0 3.7070e-06 3.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.form.AllAtOnceForm.assemble       1 1.0 9.9579e-01 1.1 5.44e+06 1.0 0.0e+00 0.0e+00 0.0e+00  6  2  0  0  0   6  2  0  0  0    43
+asQ.allatonce.function.AllAtOnceFunctionBase.global_vec_wo      70 1.0 2.0850e-04 1.2 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.halo.Halo.global_to_local_begin     838 12.7 2.6764e-03 11.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.halo.Halo.global_to_local_end     838 12.7 1.6057e-03 3.8 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_Cells_wrap_form1_cell_integral       4 1.0 1.8223e-02 1.5 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   145
+Parloop_Cells_wrap_form2_cell_integral       4 1.0 1.5795e-02 1.3 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   167
+Parloop_Cells_wrap_form3_cell_integral       4 1.0 2.3435e-02 2.0 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   113
+Parloop_Cells_wrap_form4_cell_integral       4 1.0 1.6855e-02 1.5 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   157
+Parloop_Cells_wrap_form5_cell_integral       4 1.0 2.3291e-02 2.0 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   113
+Parloop_Cells_wrap_form6_cell_integral       4 1.0 1.9562e-02 1.6 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   135
+Parloop_Cells_wrap_form7_cell_integral       4 1.0 1.5151e-02 1.4 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   174
+Parloop_Cells_wrap_form8_cell_integral       4 1.0 1.9166e-02 1.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   138
+Parloop_Cells_wrap_form9_cell_integral       4 1.0 1.8321e-02 1.6 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   144
+Parloop_Cells_wrap_form10_cell_integral       4 1.0 2.0692e-02 1.9 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   128
+Parloop_Cells_wrap_form11_cell_integral       4 1.0 2.2225e-02 1.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   119
+Parloop_Cells_wrap_form12_cell_integral       4 1.0 3.0230e-02 2.5 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0    87
+Parloop_Cells_wrap_form13_cell_integral       4 1.0 2.0590e-02 1.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   128
+Parloop_Cells_wrap_form14_cell_integral       4 1.0 2.2026e-02 1.9 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   120
+Parloop_Cells_wrap_form15_cell_integral       4 1.0 1.9369e-02 1.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   136
+Parloop_Cells_wrap_form16_cell_integral       4 1.0 1.3094e-02 1.2 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   202
+Parloop_Cells_wrap_form17_cell_integral       4 1.0 1.9821e-02 1.9 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   133
+Parloop_Cells_wrap_form18_cell_integral       4 1.0 1.9529e-02 1.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   135
+Parloop_Cells_wrap_form19_cell_integral       4 1.0 1.8157e-02 1.5 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   145
+Parloop_Cells_wrap_form20_cell_integral       4 1.0 1.5405e-02 1.4 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   171
+Parloop_Cells_wrap_form21_cell_integral       4 1.0 1.7715e-02 1.6 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   149
+Parloop_Cells_wrap_form22_cell_integral       4 1.0 1.8554e-02 1.6 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   142
+Parloop_Cells_wrap_form23_cell_integral       4 1.0 1.6455e-02 1.4 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   160
+Parloop_Cells_wrap_form24_cell_integral       4 1.0 1.7428e-02 1.4 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   151
+Parloop_Cells_wrap_form25_cell_integral       4 1.0 1.6024e-02 1.5 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   165
+Parloop_Cells_wrap_form26_cell_integral       4 1.0 1.5446e-02 1.5 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   171
+Parloop_Cells_wrap_form27_cell_integral       4 1.0 2.0449e-02 1.9 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   129
+Parloop_Cells_wrap_form28_cell_integral       4 1.0 4.2428e-02 3.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0    62
+Parloop_Cells_wrap_form29_cell_integral       4 1.0 1.8291e-02 1.8 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   144
+Parloop_Cells_wrap_form30_cell_integral       4 1.0 1.6372e-02 1.6 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   161
+Parloop_Cells_wrap_form31_cell_integral       4 1.0 1.3791e-02 1.4 3.30e+05 1.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0   191
+Parloop_Cells_wrap_form32_cell_integral       4 0.0 1.1142e-02 0.0 3.30e+05 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0    30
+firedrake.bcs.BCBase.zero     129 1.3 6.2845e-03 3.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.cofunction.Cofunction.sub     160 1.2 3.0591e-03 1.4 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.function.AllAtOnceFunctionBase.global_vec_ro       3 1.0 5.3800e-06 1.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.preconditioners.base.AllAtOncePCBase.setUp       1 1.0 1.5224e+00 1.0 1.08e+07 1.0 0.0e+00 0.0e+00 5.1e+01  9  4  0  0 14   9  4  0  0 15    55
+CyclicReduction.preconditioner.CyclicReductionPC.initialize       1 1.0 1.5222e+00 1.0 1.08e+07 1.0 0.0e+00 0.0e+00 5.1e+01  9  4  0  0 14   9  4  0  0 15    55
+asQ.preconditioners.base.AllAtOnceBlockPCBase.initialize       1 1.0 8.2241e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 3.4e+01  5  0  0  0  9   5  0  0  0 10     0
+asQ.preconditioners.base.AllAtOncePCBase.initialize       1 1.0 8.1945e-01 1.0 0.00e+00 0.0 0.0e+00 0.0e+00 3.4e+01  5  0  0  0  9   5  0  0  0 10     0
+firedrake.functionspaceimpl.FunctionSpace.local_to_global_map     132 1.0 1.3012e-02 1.1 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+CyclicReduction.preconditioner.CyclicReductionPC.update       1 1.0 3.6770e-06 4.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.preconditioners.base.AllAtOncePCBase.apply       1 1.0 1.2905e+00 1.0 1.96e+08 1.0 0.0e+00 0.0e+00 8.0e+00  8 80  0  0  2   8 80  0  0  2  1216
+CyclicReduction.preconditioner.CyclicReductionPC.apply_impl       1 1.0 1.2403e+00 1.2 1.96e+08 1.0 0.0e+00 0.0e+00 0.0e+00  7 80  0  0  0   7 80  0  0  0  1266
+asQ.allatonce.function.AllAtOnceFunctionBase.zero       2 1.0 2.2931e-03 1.8 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+CyclicReduction.preconditioner.CyclicReductionPC.get_factored_matrix      65 1.0 2.7812e-01 2.2 8.67e+05 1.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0    25
+CyclicReduction.preconditioner.CyclicReductionPC.forward_reduction       1 1.0 7.3042e-01 1.0 1.92e+08 1.0 0.0e+00 0.0e+00 0.0e+00  4 79  0  0  0   4 79  0  0  0  2108
+firedrake.ensemble.Ensemble.send      33 33.0 3.6672e+00 55685.5 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00 13  0  0  0  0  13  0  0  0  0     0
+CyclicReduction.preconditioner.CyclicReductionPC.forward_substitution       1 1.0 3.6278e-01 3.1 2.75e+06 1.0 0.0e+00 0.0e+00 0.0e+00  1  1  0  0  0   1  1  0  0  0    61
+CyclicReduction.preconditioner.CyclicReductionPC._record_diagnostics       1 1.0 3.6470e-06 1.3 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+asQ.allatonce.jacobian.AllAtOnceJacobian.mult       1 1.0 7.5208e-01 1.0 5.40e+06 1.0 0.0e+00 0.0e+00 1.2e+01  4  2  0  0  3   4  2  0  0  3    57
+firedrake.bcs.BCBase.set      33 1.0 3.1519e-03 2.9 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.function.Function.copy      33 0.0 5.4080e-03 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.function.CoordinatelessFunction.copy      33 0.0 3.5070e-03 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.output.vtk_output.VTKFile.write     257 0.0 3.4722e+00 0.0 1.73e+07 0.0 0.0e+00 0.0e+00 0.0e+00  3  1  0  0  0   3  1  0  0  0     5
+firedrake.functionspace.VectorFunctionSpace     257 0.0 3.5442e-01 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.function.Function.interpolate     514 0.0 1.8147e+00 0.0 1.73e+07 0.0 0.0e+00 0.0e+00 0.0e+00  1  1  0  0  0   1  1  0  0  0    10
+firedrake.interpolation.make_interpolator    1028 0.0 8.9015e-01 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+firedrake.interpolation.SameMeshInterpolator._interpolate     514 0.0 3.4932e-01 0.0 1.73e+07 0.0 0.0e+00 0.0e+00 0.0e+00  0  1  0  0  0   0  1  0  0  0    50
+Parloop_Cells_wrap_expression_kernel    1028 0.0 2.3867e-01 0.0 1.73e+07 0.0 0.0e+00 0.0e+00 0.0e+00  0  1  0  0  0   0  1  0  0  0    73
+firedrake.output.vtk_output.get_topology       1 0.0 1.3135e-04 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+firedrake.ensemble.Ensemble.recv     224 224.0 2.5034e-01 10.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  1  0  0  0  0   1  0  0  0  0     0
+Parloop_set_#x7f1871ff2e10_wrap_iop_iadd      64 0.0 2.0715e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_set_#x7fa8aedf3890_wrap_iop_iadd      64 0.0 2.9917e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_set_#x7f59e56bcf50_wrap_iop_iadd      64 0.0 1.8724e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_set_#x7f1c793f92e0_wrap_iop_iadd      64 0.0 2.1871e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_set_#x7f15f2279250_wrap_iop_iadd      64 0.0 1.9693e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_set_#x7fa31657d280_wrap_iop_iadd      64 0.0 1.9690e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+Parloop_set_#x7f76df79b080_wrap_iop_iadd      64 0.0 2.6511e-02 0.0 0.00e+00 0.0 0.0e+00 0.0e+00 0.0e+00  0  0  0  0  0   0  0  0  0  0     0
+------------------------------------------------------------------------------------------------------------------------
+
+Object Type          Creations   Destructions. Reports information only for process 0.
+
+--- Event Stage 0: Main Stage
+
+           Container   140            135
+              Viewer     1              0
+           Index Set   159            146
+   IS L to G Mapping   133            132
+             Section    15              5
+   Star Forest Graph    59             49
+              Vector  1820           1405
+              Matrix   528            461
+      Preconditioner   134            133
+       Krylov Solver    69             68
+     DMKSP interface     2              0
+                SNES    35             34
+              DMSNES     2              0
+    Distributed Mesh     9              2
+            DM Label    17              7
+    GraphPartitioner     2              1
+     Discrete System    11              4
+           Weak Form    11              4
+========================================================================================================================
+Average time to get PetscTime(): 4.1e-08
+Average time for MPI_Barrier(): 1.7794e-06
+Average time for zero size MPI_Send(): 2.074e-06
+#PETSc Option Table entries:
+-log_view ascii:foobar2 # (source: code)
+#End of PETSc Option Table entries
+Compiled without FORTRAN kernels
+Compiled with full precision matrices (default)
+sizeof(short) 2 sizeof(int) 4 sizeof(long) 8 sizeof(void*) 8 sizeof(PetscScalar) 8 sizeof(PetscInt) 4
+Configure options: --COPTFLAGS="-O3 -march=native -mtune=native -I/usr/include/hdf5/openmpi -I/usr/include/scotch -I/usr/include/superlu -I/usr/include/superlu-dist -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi" --CXXOPTFLAGS="-O3 -march=native -mtune=native -I/usr/include/hdf5/openmpi -I/usr/include/scotch -I/usr/include/superlu -I/usr/include/superlu-dist -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi" --FOPTFLAGS="-O3 -march=native -mtune=native -I/usr/include/hdf5/openmpi -I/usr/include/scotch -I/usr/include/superlu -I/usr/include/superlu-dist -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi" --download-hypre --with-bison --with-c2html=0 --with-debugging=yes --with-fftw --with-fortran-bindings=0 --with-hdf5 --with-hwloc --with-metis --with-mumps --with-netcdf --with-pnetcdf --with-ptscotch --with-scalapack-lib=-lscalapack-openmpi --with-shared-libraries=1 --with-strict-petscerrorcode --with-suitesparse --with-superlu_dist --with-zlib PETSC_ARCH=arch-firedrake-default
+-----------------------------------------
+Libraries compiled on 2025-05-05 13:59:41 on LAPTOP-B46JGGE5
+Machine characteristics: Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39
+Using PETSc directory: /home/tinuskg/Desktop/petsc
+Using PETSc arch: arch-firedrake-default
+-----------------------------------------
+
+Using C compiler: mpicc  -fPIC -Wall -Wwrite-strings -Wno-unknown-pragmas -Wno-lto-type-mismatch -Wno-stringop-overflow -fstack-protector -fvisibility=hidden -O3 -march=native -mtune=native -I/usr/include/hdf5/openmpi -I/usr/include/scotch -I/usr/include/superlu -I/usr/include/superlu-dist -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi 
+Using Fortran compiler: mpif90  -fPIC -Wall -ffree-line-length-none -ffree-line-length-0 -Wno-lto-type-mismatch -Wno-unused-dummy-argument -O3 -march=native -mtune=native -I/usr/include/hdf5/openmpi -I/usr/include/scotch -I/usr/include/superlu -I/usr/include/superlu-dist -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi   
+-----------------------------------------
+
+Using include paths: -I/home/tinuskg/Desktop/petsc/include -I/home/tinuskg/Desktop/petsc/arch-firedrake-default/include -I/usr/include/suitesparse -I/usr/include
+-----------------------------------------
+
+Using C linker: mpicc
+Using Fortran linker: mpif90
+Using libraries: -Wl,-rpath,/home/tinuskg/Desktop/petsc/arch-firedrake-default/lib -L/home/tinuskg/Desktop/petsc/arch-firedrake-default/lib -lpetsc -Wl,-rpath,/home/tinuskg/Desktop/petsc/arch-firedrake-default/lib -L/home/tinuskg/Desktop/petsc/arch-firedrake-default/lib -Wl,-rpath,/usr/lib/x86_64-linux-gnu/hdf5/openmpi -L/usr/lib/x86_64-linux-gnu/hdf5/openmpi -Wl,-rpath,/usr/lib/x86_64-linux-gnu/openmpi/lib/fortran/gfortran -L/usr/lib/x86_64-linux-gnu/openmpi/lib/fortran/gfortran -Wl,-rpath,/usr/lib/gcc/x86_64-linux-gnu/13 -L/usr/lib/gcc/x86_64-linux-gnu/13 -lHYPRE -lspqr -lumfpack -lklu -lcholmod -lamd -lsuperlu_dist -ldmumps -lmumps_common -lpord -lpthread -lscalapack-openmpi -lfftw3_mpi -lfftw3 -llapack -lblas -lptesmumps -lptscotchparmetisv3 -lptscotch -lptscotcherr -lesmumps -lscotch -lscotcherr -lmetis -lnetcdf -lpnetcdf -lhdf5_hl -lhdf5 -lm -lz -lhwloc -lmpi_usempif08 -lmpi_usempi_ignore_tkr -lmpi_mpifh -lmpi -lopen-rte -lopen-pal -lhwloc -levent_core -levent_pthreads -lgfortran -lm -lz -lgfortran -lm -lgfortran -lgcc_s -lquadmath -lstdc++ -lquadmath
+-----------------------------------------
+
+
+
+      ##########################################################
+      #                                                        #
+      #                       WARNING!!!                       #
+      #                                                        #
+      #   This code was compiled with a debugging option.      #
+      #   To get timing results run ./configure                #
+      #   using --with-debugging=no, the performance will      #
+      #   be generally two or three times faster.              #
+      #                                                        #
+      ##########################################################
+
+

@@ -58,7 +58,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
             # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
             D = fd.assemble(dt1*M + theta*K, bcs=self.block_bcs).petscmat # Main diagonal block system
-            L = fd.assemble(-1*dt1*M).petscmat # Lower/off - diagonal block system
+            L = fd.assemble(-1*dt1*M, bcs=self.block_bcs).petscmat # Lower/off - diagonal block system
             f = self._x[i].dat._vec
 
             self.diag_matrices.append(D)
@@ -113,8 +113,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
         # ---------------------------------------------------------------------------
-        L, D, f = self.forward_reduction(self.diag_matrices,
-                                         self.lower_diag_matrices,
+        L, D, f = self.forward_reduction(self.lower_diag_matrices,
+                                         self.diag_matrices,
                                          self.rhs) 
 
         # ---------------------------------------------------------------------------
@@ -124,8 +124,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # Total number of temporal ranks
         n_temporal = self.ensemble.ensemble_comm.size
 
-        # Cant we send/recieve from y instead?
-
+        
         # Allocate buffers
         if self.temporal_rank > 0:
             # Receive u_prev from previous temporal rank. Sends and recieves must be done using Firedrake functions
@@ -164,14 +163,11 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         # BACKSUBSTITUTION (also writes to the global solution vector y)
         # ---------------------------------------------------------------------------
-        self.forward_substitution(self.diag_matrices, self.lower_diag_matrices, self.rhs, u_prev, y)
-
-        y._vec.view()
+        self.forward_substitution(self.lower_diag_matrices, self.diag_matrices, self.rhs, u_prev, y)
         
 
-
     @profiler()
-    def forward_reduction(self, main_diag, lower_diag, rhs):
+    def forward_reduction(self, lower_diag, main_diag, rhs):
         """
         Perform the forward reduction step of the cyclic reduction algorithm.
 
@@ -193,16 +189,17 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         # Temporal rank 0 is offset from other ranks by 1
         offset = 1 if self.temporal_rank == 0 else 0
         
-        # Reduce onto these variables
-        L, D, f = main_diag[offset].copy(), lower_diag[offset].copy(), rhs[offset].copy()
+        # Reduce onto these variables. L and D are the lower diagonal and main diagonal
+        # matrices respectively of type 'mpiaij'.
+        L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
 
-        if len(main_diag) > 1: # this processor owns more than one timestep, so we reduce
+        if len(main_diag) > 1: # This processor owns more than one timestep, so we reduce
             for i in range(offset + 1, self.nlocal_timesteps):
-            
-                L_next = main_diag[i].copy()
-                D_next = lower_diag[i].copy()
+                L_next = lower_diag[i].copy()
+                D_next = main_diag[i].copy()
                 f_next = rhs[i].copy()
 
+                # Factor using LU decomposition with MUMPS
                 D_factored = self.get_factored_matrix(D, self.ensemble.comm)
 
                 # Compute L <- L_next * D^{-1} * L, D <- -D_next and f <- L_next * D^{-1} * f - f_next
@@ -243,7 +240,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     
     @profiler()
-    def forward_substitution(self, main_diag, lower_diag, rhs, u_prev, y):
+    def forward_substitution(self, lower_diag, main_diag, rhs, u_prev, y):
         """
         Perform the back substitution step of the cyclic reduction algorithm.
         """
@@ -252,8 +249,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         for i in range(offset, self.nlocal_timesteps):
 
-            L = main_diag[i].copy()
-            D = lower_diag[i].copy()
+            L = lower_diag[i].copy()
+            D = main_diag[i].copy()
             f = rhs[i].copy()
 
             # Solve: u_next = D^{-1} (f - L * u_prev)

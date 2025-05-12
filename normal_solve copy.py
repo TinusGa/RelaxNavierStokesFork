@@ -85,8 +85,8 @@ class CRsolver():
                 f = fd.assemble(RHS, bcs=self.block_bcs)
                 f = f.dat._vec # f[1] = L*u[0]
             else:
-                f = fd.Function(self.field_function_space).dat._vec
-                f.scale(0.0) 
+                f = fd.Function(self.field_function_space).zero()
+                f = f.dat._vec
 
             self.diag_matrices.append(D)
             self.lower_diag_matrices.append(L)
@@ -118,8 +118,64 @@ class CRsolver():
             self.a0[0,:] = local_u1[:]
             with y.global_vec_wo() as yvec:
                 yvec.array[:] = self.a0.reshape(-1)[:]
-        # y._vec.view()
         
+        if self.temporal_rank > 0:
+            # Receive u_prev from previous temporal rank. Sends and recieves must be done using Firedrake functions
+            u_prev_function = fd.Function(self.field_function_space)
+            source = self.temporal_rank - 1
+            self.ensemble.recv(u_prev_function, source=source, tag=88)
+            # Convert u_prev_function to a PETSc Vec
+            with u_prev_function.dat.vec as v:
+                u_prev = v.copy()
+        else:
+            # If this is the first temporal rank, we use u1 as u_prev
+            u_prev = u1.copy() 
+
+        offset = 1 if self.temporal_rank == 0 else 0
+        
+        for i in range(offset, self.nlocal_timesteps):
+            L, D, f = self.diag_matrices[offset].copy(), lower_diag[offset].copy(), rhs[offset].copy()
+            
+            L_next = main_diag[i].copy()
+            D_next = lower_diag[i].copy()
+            f_next = rhs[i].copy()
+
+            D_factored = self.get_factored_matrix(D, self.ensemble.comm)
+
+            # Compute L <- L_next * D^{-1} * L, D <- -D_next and f <- L_next * D^{-1} * f - f_next
+            L_dense = L.copy()
+            L_dense.convert('dense')
+            D_inv_L_dense = PETSc.Mat().createDense(size=L_dense.getSizes(), comm=self.ensemble.comm)
+            D_inv_L_dense.setUp()
+            D_inv_L_dense.assemble()
+
+            # Compute L <- L_next * D^{-1} * L
+            D_factored.matSolve(L_dense, D_inv_L_dense) # D^{-1} * L and stores in D_inv_L_dense
+            L.convert('dense') # Convert L to dense matrix
+            L.setUp()
+            L.assemble()
+            L_next.matMult(D_inv_L_dense, L) # L <- L_next * D^{-1} * L
+
+            # Compute D <- - D_next
+            D_next.scale(-1.0) # D_next <- -D_next
+            D = D_next.copy() # D <- D_next
+
+            # Compute f <- L_next * D^{-1} * f - f_next
+            D_inv_f = f.duplicate()
+            D_factored.solve(f, D_inv_f) # D^{-1} * f
+            f_next.scale(-1.0) # f_next <- -f_next
+            L_next.multAdd(D_inv_f, f_next, f) # f <- L_next * D^{-1} * f - f_next
+
+            # Destruction
+            D_factored.destroy()
+            L_dense.destroy()
+            D_inv_L_dense.destroy()
+            D_inv_f.destroy()
+            L_next.destroy()
+            D_next.destroy()
+            f_next.destroy()
+
+
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
         # ---------------------------------------------------------------------------
@@ -210,13 +266,13 @@ class CRsolver():
         offset = 1 if self.temporal_rank == 0 else 0
         
         # Reduce onto these variables
-        L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
+        L, D, f = main_diag[offset].copy(), lower_diag[offset].copy(), rhs[offset].copy()
 
         if len(main_diag) > 1: # this processor owns more than one timestep, so we reduce
             for i in range(offset + 1, self.nlocal_timesteps):
             
-                L_next = lower_diag[i].copy()
-                D_next = main_diag[i].copy()
+                L_next = main_diag[i].copy()
+                D_next = lower_diag[i].copy()
                 f_next = rhs[i].copy()
 
                 D_factored = self.get_factored_matrix(D, self.ensemble.comm)
@@ -266,8 +322,8 @@ class CRsolver():
 
         for i in range(offset, self.nlocal_timesteps):
 
-            L = lower_diag[i].copy()
-            D = main_diag[i].copy()
+            L = main_diag[i].copy()
+            D = lower_diag[i].copy()
             f = rhs[i].copy()
 
             # Solve: u_next = D^{-1} (f - L * u_prev)

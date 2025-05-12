@@ -26,10 +26,10 @@ import matplotlib.pyplot as plt
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
     "Number of temporal processors": 4, # Optimal choice is the root of the number of time steps
-    "Number of time steps": 9, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
+    "Number of time steps": 257, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
     "dt": 0.001,
-    "nx": 4,
-    "ny": 4,
+    "nx": 19, # 25 x 25 is a bad choice. Leads to an uneven mesh distribution across ensemble ranks. Very strange
+    "ny": 19, 
     "degree_space": 1,
     "theta": 1,
 }
@@ -45,6 +45,7 @@ theta = problem_parameters['theta']
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(n_timesteps-1, temporal_processors)
+# time_partition = [64,64,64,64]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Create a mesh with nx+1 and ny+1 vertices
@@ -56,12 +57,12 @@ V = FunctionSpace(mesh, "CG", degree_space)
 x, y = SpatialCoordinate(V.mesh())
 
 u0 = Function(V)
-u0.project(cos(pi*x)*cos(2*pi*y))
-bcs = []
+# u0.project(cos(pi*x)*cos(2*pi*y))
+# bcs = []
 
-# bcs = [DirichletBC(V, 0, sub_domain=1)]
+bcs = [DirichletBC(V, 0, sub_domain=1)]
 
-# u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+u0.project(sin(0.25*pi*x)*cos(2*pi*y))
 
 
 def form_mass(u, v):
@@ -84,8 +85,6 @@ solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'matfree',
     'ksp_type': 'preonly',
-    # 'ksp_max_it': 0, # Since Cyclic Reduction is a direct solver/method
-    #'ksp_rtol': 1e-12,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
@@ -209,7 +208,7 @@ def window_postproc(aaofunc):
     PETSc.Sys.Print(time_row)
     PETSc.Sys.Print(qerr_row)
     
-window_postproc(aaofunc)
+# window_postproc(aaofunc)
 
 exact_sol = AllAtOnceFunction(ensemble, time_partition, V)
 q_exact = Function(V)
@@ -237,7 +236,7 @@ for step in range(exact_sol.ntimesteps):
 
         #exact_sol[local_step].copy(q_exact)
 
-window_postproc(exact_sol)
+# window_postproc(exact_sol)
 
 # aaosolver.aaofunc._vec.view()
 
