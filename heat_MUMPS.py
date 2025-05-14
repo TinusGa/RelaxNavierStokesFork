@@ -14,7 +14,7 @@ class parameters:
     def __init__(self):
         self.N = 257
         self.dt = 0.001 #Specified instead of end time
-        self.M = 25
+        self.M = 49
         self.Mbase = 5
         self.Mref = 2
         self.degree = {'space': 1,

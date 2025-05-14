@@ -27,12 +27,12 @@ class ProblemParameters:
         self.dt = 0.001 #Specified instead of end time
         self.M = 9 # Number of spatial points
         self.Mbase = 4 # Number of spatial points in base mesh
-        self.Mref = 2 # Number of refinements in the mesh hierarchy
+        self.Mref = 1 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 1,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
-        self.Pt = 2 # Processors in time
+        self.Pt = 1 # Processors in time
         self.theta = 1 # Theta parameter for the time-stepping scheme
 
 parameters = ProblemParameters()

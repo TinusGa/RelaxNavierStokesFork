@@ -25,11 +25,11 @@ import matplotlib.pyplot as plt
 
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
-    "Number of temporal processors": 4, # Optimal choice is the root of the number of time steps
+    "Number of temporal processors": 8, # Optimal choice is the root of the number of time steps
     "Number of time steps": 257, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
     "dt": 0.001,
-    "nx": 19, # 25 x 25 is a bad choice. Leads to an uneven mesh distribution across ensemble ranks. Very strange
-    "ny": 19, 
+    "nx": 49, # Some choices of nx & ny lead to an uneven mesh distribution across ensemble ranks and causes the program to crash. Very strange
+    "ny": 49, 
     "degree_space": 1,
     "theta": 1,
 }
@@ -150,6 +150,7 @@ PETSc.Sys.Print(f"Running with {processors} MPI processes")
 PETSc.Sys.Print(f"Time partition: {time_partition}, total time steps: {n_timesteps}")
 
 A,_ = aaosolver.snes.ksp.getOperators()
+# nnz = int(A.getInfo()['nz_allocated'])
 PETSc.Sys.Print(f"Size A: {A.getSize()}, with ownership ranges: {A.getOwnershipRanges()}")
 #PETSc.Sys.Print(f"Ownership ranges of A: {A.getOwnershipRanges()}") 
 #PETSc.Sys.Print(f"Ownership ranges col of A: {A.getOwnershipRangesColumn()}")
