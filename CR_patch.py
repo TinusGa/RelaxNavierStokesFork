@@ -27,9 +27,9 @@ class ProblemParameters:
         self.dt = 0.001 #Specified instead of end time
         self.M = 9 # Number of spatial points
         self.Mbase = 4 # Number of spatial points in base mesh
-        self.Mref = 1 # Number of refinements in the mesh hierarchy
+        self.Mref = 2 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 1,
-                       'time': 0} # DG degree 0 gives backward Euler
+                       'time': 3} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
         self.Pt = 1 # Processors in time
@@ -75,7 +75,7 @@ solver_parameters = {'snes_type': 'ksponly',
                     'mat_type': 'aij',
                     'ksp_type': 'fgmres',
                     "ksp_monitor_true_residual": None,
-                    "ksp_max_it": 1,
+                    "ksp_max_it": 100,
                     "ksp_gmres_restart": 100,
                     "ksp_atol": 1e-6,
                     "ksp_rtol": 1e-6,
@@ -86,19 +86,10 @@ solver_parameters = {'snes_type': 'ksponly',
                     "mg_levels_ksp_chebyshev_esteig": "0,0.25,0,1.05",
                     "mg_levels_ksp_max_it": 2,
                     "mg_levels_ksp_convergence_test": "skip",
-                    # "mg_levels_ksp_type": "richardson", # ALTERNATIVE TO CHEBYSHEV 
-                    # "mg_levels_ksp_richardson_scale": 0.6, # ALTERNATIVE TO CHEBYSHEV 
                     "mg_levels_pc_type": "python",
-                    # "mg_levels_pc_python_type": "CyclicReduction.ASMStarPC", # CUSTOM
-                    "mg_levels_pc_python_type": "CyclicReduction.CyclicReductionPC2", # CUSTOM
-                    # "mg_levels_pc_python_type": "firedrake.ASMStarPC", # We have to call this within our custom PC. Otherwise PETSc will use PCASM. 
-                    # "mg_levels_pc_star_construct_dim": 0,
-                    # "mg_levels_pc_star_sub_sub_pc_type":"python", # CUSTOM
-                    # "mg_levels_pc_star_sub_sub_pc_python_type": "CyclicReduction.CyclicReductionPC2", # CUSTOM
-                    # "mg_levels_pc_star_sub_sub_pc_type": "lu",
-                    # "mg_levels_pc_star_sub_sub_pc_factor_mat_solver_type": "umfpack",
+                    "mg_levels_pc_python_type": "CyclicReduction.CyclicReductionPC2", # Contains firedrake.ASMStarPC
                     "mg_coarse_pc_type": "python",
-                    "mg_coarse_pc_python_type": "firedrake.AssembledPC",
+                    "mg_coarse_pc_python_type": "firedrake.AssembledPC", # Could also use CR here?
                     "mg_coarse_assembled_pc_type": "lu",
                     "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
                     }

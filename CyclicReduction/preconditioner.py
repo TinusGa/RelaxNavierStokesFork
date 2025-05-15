@@ -10,7 +10,7 @@ from asQ.parallel_arrays import SharedArray
 from asQ.allatonce import time_average
 
 
-__all__ = ['CyclicReductionPC']
+__all__ = ['CyclicReductionPC','ApproxCyclicReductionPC']
 
 class CyclicReductionPC(AllAtOnceBlockPCBase):
 
@@ -42,8 +42,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
         self.lower_diag_matrices = []
         self.rhs = []
 
-        dt1 = fd.Constant(1/self.dt)
-        theta = fd.Constant(1)
+        self.dt1 = fd.Constant(1/self.dt)
+        self.theta = fd.Constant(1)
 
         for i in range(self.nlocal_timesteps):
             # The reference states
@@ -57,8 +57,8 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
             K = self.form_function(u, v, t)
 
             # Represents the linear system for timestep/row i. That is L*u[i] + D*u[i+1] = f[i+1]
-            D = fd.assemble(dt1*M + theta*K, bcs=self.block_bcs).petscmat # Main diagonal block system
-            L = fd.assemble(-1*dt1*M, bcs=self.block_bcs).petscmat # Lower/off - diagonal block system
+            D = fd.assemble(self.dt1*M + self.theta*K, bcs=self.block_bcs).petscmat # Main diagonal block system
+            L = fd.assemble(-1*self.dt1*M, bcs=self.block_bcs).petscmat # Lower/off - diagonal block system
             f = self._x[i].dat._vec
 
             self.diag_matrices.append(D)
@@ -365,3 +365,168 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         return index_list
 
+class ApproxCyclicReductionPC(CyclicReductionPC):
+    """
+    Approximate cyclic reduction preconditioner.
+    
+    This class implements an approximate cyclic reduction preconditioner for
+    solving linear systems of equations. It is a subclass of the CyclicReductionPC
+    class and provides additional functionality for approximating the solution
+    using a reduced set of variables.
+    
+    Parameters
+    ----------
+    A : PETSc.Mat
+        The matrix to be preconditioned.
+    comm : PETSc.Comm
+        The MPI communicator over which to create the preconditioner.
+    """
+    def initialize(self, pc):
+        super().initialize(pc)
+
+    def apply_impl(self, pc, x, y):
+        y.zero()
+        
+        # Define the pencil for the current rank for timestep ordering
+        # p0 : Pencil describing spatial DOF distribution per timestep. E.g. If spatial rank 0, temporal rank 0
+        # owns 3 timesteps of the global system, and owns 10 spatial DOFs in each then p0.subshape = (3,10)
+        # This let's us use a0 to write to the global solution vector y 
+        subcomm = Subcomm(self.ensemble.ensemble_comm, [0, 1])
+        nlocal = self.field_function_space.node_set.size # Spatial DOFs for this rank
+        NN = np.array([self.ntimesteps, nlocal], dtype=int)
+        self.p0 = Pencil(subcomm, NN, axis=1)
+        self.a0 = np.zeros(self.p0.subshape,dtype=np.float64)
+
+        # Temporal rank 0 owns the first timestep of the global system.
+        # This is the first block of the system, which is the first diagonal matrix
+        # and the first rhs vector.
+        if self.temporal_rank == 0:
+            F = self.get_factored_matrix(self.diag_matrices[0].copy(), self.ensemble.comm)
+            u1 = self.rhs[0].duplicate()
+            F.solve(self.rhs[0], u1)
+
+            local_u1 = u1.getArray()
+            self.a0[0,:] = local_u1[:]
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = self.a0.reshape(-1)[:]
+        
+        # ---------------------------------------------------------------------------
+        # FORWARD REDUCTION
+        # ---------------------------------------------------------------------------
+        L, D, f = self.approx_forward_reduction(self.lower_diag_matrices,
+                                         self.diag_matrices,
+                                         self.rhs) 
+
+        # ---------------------------------------------------------------------------
+        # INTERFACE SOLVE (processor communication)
+        # ---------------------------------------------------------------------------
+
+        # Total number of temporal ranks
+        n_temporal = self.ensemble.ensemble_comm.size
+
+        
+        # Allocate buffers
+        if self.temporal_rank > 0:
+            # Receive u_prev from previous temporal rank. Sends and recieves must be done using Firedrake functions
+            u_prev_function = fd.Function(self.field_function_space)
+            source = self.temporal_rank - 1
+            self.ensemble.recv(u_prev_function, source=source, tag=88)
+            # Convert u_prev_function to a PETSc Vec
+            with u_prev_function.dat.vec as v:
+                u_prev = v.copy()
+        else:
+            # If this is the first temporal rank, we use u1 as u_prev
+            u_prev = u1 
+
+        # Solve: u_next = D^{-1} (f - L * u_prev)
+        rhs = f.duplicate()
+        f.scale(-1.0) # Set f <- -f
+        L.multAdd(u_prev, f, rhs)  # rhs <- L * u_prev - f
+        rhs.scale(-1.0) # rhs <- f - L * u_prev
+
+        u_next = rhs.duplicate()
+        F = self.get_factored_matrix(D.copy(), self.ensemble.comm)
+        F.solve(rhs, u_next)
+
+        # Send to next temporal rank
+        if self.temporal_rank < n_temporal - 1:
+            dest = self.temporal_rank + 1
+            # Convert u_next to a Firedrake Function
+            u_next_function = fd.Function(self.field_function_space)
+            with u_next_function.dat.vec as v:
+                u_next.copy(v) # Copies data from u_next to v
+            self.ensemble.send(u_next_function, dest=dest, tag=88)
+        
+        # All ranks now own a u_prev and u_next. Most importantly, u_prev for each processor can be used 
+        # to solve for all its owning rows of the global system.
+        
+        # ---------------------------------------------------------------------------
+        # BACKSUBSTITUTION (also writes to the global solution vector y)
+        # ---------------------------------------------------------------------------
+        self.forward_substitution(self.lower_diag_matrices, self.diag_matrices, self.rhs, u_prev, y)
+    
+    def approx_forward_reduction(self, lower_diag, main_diag, rhs):
+        """
+        Perform the forward reduction step of the cyclic reduction algorithm.
+
+        Expects main_diag, lower_diag and rhs to be lists of matrices/vectors
+        representing the diagonal, lower diagonal and right-hand side of the
+        system of equations respectively. Entries are expected to be in PETSc.Mat
+        or PETSc.Vec format respectively.
+
+        Notes
+        -----
+        - Input lists or it's entries should never be changed in any way during
+          the reduction process.
+        """
+
+        # Make sure the input lists are of equal length
+        if len(main_diag) != len(lower_diag) or len(main_diag) != len(rhs):
+            raise ValueError("Input lists must be of equal length.")
+        
+        # Temporal rank 0 is offset from other ranks by 1
+        offset = 1 if self.temporal_rank == 0 else 0
+        
+        # Reduce onto these variables. L and D are the lower diagonal and main diagonal
+        # matrices respectively of type 'mpiaij'.
+        L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
+
+        if len(main_diag) > 1: # This processor owns more than one timestep, so we reduce
+            for i in range(offset + 1, self.nlocal_timesteps):
+                L_next = lower_diag[i].copy()
+                D_next = main_diag[i].copy()
+                f_next = rhs[i].copy()
+
+                # Factor using LU decomposition with MUMPS
+                D_factored = self.get_factored_matrix(D, self.ensemble.comm)
+
+                # Compute f <- L_next * D^{-1} * f - f_next
+                D_inv_f = f.duplicate()
+                D_factored.solve(f, D_inv_f) # D^{-1} * f
+                f_next.scale(-1.0) # f_next <- -f_next
+                L_next.multAdd(D_inv_f, f_next, f) # f <- L_next * D^{-1} * f - f_next
+
+                # Destruction
+                D_factored.destroy()
+                D_inv_f.destroy()
+
+                L_next.destroy()
+                D_next.destroy()
+                f_next.destroy()
+
+        L.destroy()
+        D.destroy()
+        # f is now correct rhs
+
+        # Let's do a BIIIG timestep
+        factor = fd.Constant(len(main_diag) - 1)
+
+        t = self.time[0]
+        v = fd.TestFunction(self.field_function_space)
+        u = fd.TrialFunction(self.field_function_space)
+        M = self.form_mass(u, v)
+        K = self.form_function(u, v, t)
+        D = fd.assemble(factor*self.dt1*M + self.theta*K, bcs=self.block_bcs).petscmat
+        L = fd.assemble(-1*factor*self.dt1*M, bcs=self.block_bcs).petscmat
+
+        return L, D, f

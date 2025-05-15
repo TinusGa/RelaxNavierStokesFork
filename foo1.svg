@@ -1,0 +1,2898 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="342" onload="init(evt)" viewBox="0 0 1200 342" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="342.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="325" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="325" > </text>
+<g id="frames">
+<g >
+<title>Parloop_Cells_wrap_form00_cell_integral (93,842 samples, 0.26%)</title><rect x="789.8" y="133" width="3.1" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="792.79" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (492,386 samples, 1.38%)</title><rect x="311.9" y="197" width="16.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="314.93" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (12,267 samples, 0.03%)</title><rect x="821.1" y="101" width="0.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="824.06" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.local_to_global_map (34,235 samples, 0.10%)</title><rect x="793.0" y="149" width="1.1" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="795.98" y="159.5" ></text>
+</g>
+<g >
+<title>SFReduceBegin (3,234 samples, 0.01%)</title><rect x="545.8" y="133" width="0.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="548.83" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (92,135 samples, 0.26%)</title><rect x="466.1" y="149" width="3.0" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="469.07" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.copy (989,643 samples, 2.76%)</title><rect x="436.9" y="213" width="32.6" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="439.87" y="223.5" >as..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,406 samples, 0.01%)</title><rect x="823.5" y="101" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="826.49" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (48,749 samples, 0.14%)</title><rect x="689.7" y="69" width="1.7" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="692.75" y="79.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (43,992 samples, 0.12%)</title><rect x="828.1" y="117" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="831.11" y="127.5" ></text>
+</g>
+<g >
+<title>ApplyBC (111,509 samples, 0.31%)</title><rect x="298.4" y="229" width="3.7" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="301.44" y="239.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.sendrecv (3,940 samples, 0.01%)</title><rect x="381.1" y="197" width="0.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="384.07" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (13,663 samples, 0.04%)</title><rect x="512.6" y="101" width="0.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="515.58" y="111.5" ></text>
+</g>
+<g >
+<title>SFReduceEnd (6,637 samples, 0.02%)</title><rect x="864.9" y="149" width="0.2" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="867.88" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.assign (5,403 samples, 0.02%)</title><rect x="691.4" y="149" width="0.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="694.35" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form23_cell_integral (29,590 samples, 0.08%)</title><rect x="830.7" y="149" width="1.0" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="833.74" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (40,580 samples, 0.11%)</title><rect x="850.1" y="117" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="853.10" y="127.5" ></text>
+</g>
+<g >
+<title>PCSetUp (424,408 samples, 1.19%)</title><rect x="617.3" y="149" width="14.0" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="620.32" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (1,044,416 samples, 2.92%)</title><rect x="691.6" y="117" width="34.5" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="694.63" y="127.5" >as..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (6,722 samples, 0.02%)</title><rect x="855.4" y="101" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="858.40" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.zero (3,784 samples, 0.01%)</title><rect x="647.2" y="165" width="0.1" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="650.19" y="175.5" ></text>
+</g>
+<g >
+<title>firedrake.bcs.BCBase.zero (5,374 samples, 0.02%)</title><rect x="561.9" y="165" width="0.2" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="564.89" y="175.5" ></text>
+</g>
+<g >
+<title>SFDistSection (22,222 samples, 0.06%)</title><rect x="1185.9" y="213" width="0.7" height="15.0" fill="rgb(231,124,29)" rx="2" ry="2" />
+<text  x="1188.85" y="223.5" ></text>
+</g>
+<g >
+<title>firedrake.linear_solver.LinearSolver.__init__ (359,116 samples, 1.00%)</title><rect x="1008.0" y="213" width="11.8" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1010.95" y="223.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunction.__init__ (634,148 samples, 1.77%)</title><rect x="670.4" y="149" width="21.0" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="673.45" y="159.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (1,628,023 samples, 4.55%)</title><rect x="1082.9" y="181" width="53.7" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1085.89" y="191.5" >ParLo..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (6,007 samples, 0.02%)</title><rect x="853.3" y="85" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="856.34" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (16,460 samples, 0.05%)</title><rect x="844.8" y="101" width="0.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="847.76" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form20_cell_integral (40,632 samples, 0.11%)</title><rect x="826.5" y="149" width="1.3" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="829.48" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.update_time_halos (24,341 samples, 0.07%)</title><rect x="881.9" y="165" width="0.8" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="884.90" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (29,948 samples, 0.08%)</title><rect x="812.9" y="117" width="0.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="815.86" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (31,300 samples, 0.09%)</title><rect x="829.7" y="101" width="1.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="832.71" y="111.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (31,812 samples, 0.09%)</title><rect x="379.9" y="149" width="1.1" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="382.94" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.jacobian.AllAtOnceJacobian.petsc_mat (111,657 samples, 0.31%)</title><rect x="478.1" y="229" width="3.7" height="15.0" fill="rgb(239,158,38)" rx="2" ry="2" />
+<text  x="481.08" y="239.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (6,742 samples, 0.02%)</title><rect x="772.0" y="69" width="0.2" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="775.00" y="79.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (24,345 samples, 0.07%)</title><rect x="811.9" y="117" width="0.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="814.94" y="127.5" ></text>
+</g>
+<g >
+<title>SFReduceEnd (4,840 samples, 0.01%)</title><rect x="1007.8" y="197" width="0.2" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="1010.79" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.tsfc_interface.compile_form (19,348 samples, 0.05%)</title><rect x="1004.5" y="197" width="0.7" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1007.54" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.assemble.assemble (620,822 samples, 1.73%)</title><rect x="984.7" y="213" width="20.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="987.71" y="223.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (136,827 samples, 0.38%)</title><rect x="1058.5" y="165" width="4.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1061.47" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (37,493 samples, 0.10%)</title><rect x="820.2" y="117" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="823.23" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.assemble.assemble (2,815,256 samples, 7.86%)</title><rect x="1068.4" y="213" width="92.8" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1071.37" y="223.5" >firedrake.a..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (76,706 samples, 0.21%)</title><rect x="831.7" y="133" width="2.6" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="834.72" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.sendrecv (16,435 samples, 0.05%)</title><rect x="881.9" y="149" width="0.5" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="884.91" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form21_cell_integral (52,878 samples, 0.15%)</title><rect x="827.8" y="149" width="1.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="830.82" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (12,862 samples, 0.04%)</title><rect x="1005.2" y="213" width="0.4" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1008.18" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (35,260 samples, 0.10%)</title><rect x="837.7" y="117" width="1.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="840.71" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_begin (64,932 samples, 0.18%)</title><rect x="541.8" y="133" width="2.1" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="544.80" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (28,148 samples, 0.08%)</title><rect x="813.9" y="117" width="1.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="816.93" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (35,533 samples, 0.10%)</title><rect x="846.3" y="101" width="1.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="849.27" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_set_#x7ff335be5610_wrap_iop_iadd (46,520 samples, 0.13%)</title><rect x="513.0" y="149" width="1.6" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="516.03" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (29,980 samples, 0.08%)</title><rect x="837.7" y="101" width="1.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="840.74" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (44,746 samples, 0.13%)</title><rect x="509.9" y="133" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="512.89" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (124,757 samples, 0.35%)</title><rect x="1175.0" y="181" width="4.1" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1177.97" y="191.5" ></text>
+</g>
+<g >
+<title>VecScatterBegin (4,259 samples, 0.01%)</title><rect x="638.6" y="149" width="0.1" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="641.58" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form24_cell_integral (77,020 samples, 0.22%)</title><rect x="831.7" y="149" width="2.6" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="834.71" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (426,455 samples, 1.19%)</title><rect x="865.1" y="149" width="14.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="868.10" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (167,062 samples, 0.47%)</title><rect x="999.0" y="165" width="5.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1002.03" y="175.5" ></text>
+</g>
+<g >
+<title>VecScatterBegin (4,094 samples, 0.01%)</title><rect x="1034.2" y="133" width="0.1" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1037.19" y="143.5" ></text>
+</g>
+<g >
+<title>MatMultAdd (15,735 samples, 0.04%)</title><rect x="605.6" y="149" width="0.5" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="608.58" y="159.5" ></text>
+</g>
+<g >
+<title>VecCopy (21,006 samples, 0.06%)</title><rect x="515.7" y="149" width="0.7" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="518.70" y="159.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (11,730 samples, 0.03%)</title><rect x="403.3" y="101" width="0.4" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="406.34" y="111.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (64,490 samples, 0.18%)</title><rect x="1176.7" y="165" width="2.2" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1179.73" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (14,620 samples, 0.04%)</title><rect x="512.5" y="117" width="0.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="515.55" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_begin (79,233 samples, 0.22%)</title><rect x="859.6" y="149" width="2.6" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="862.62" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (65,960 samples, 0.18%)</title><rect x="723.9" y="53" width="2.2" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="726.89" y="63.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (63,783 samples, 0.18%)</title><rect x="831.9" y="101" width="2.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="834.85" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (106,533 samples, 0.30%)</title><rect x="377.5" y="181" width="3.5" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="380.48" y="191.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.copy (993,507 samples, 2.78%)</title><rect x="404.0" y="213" width="32.8" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="407.03" y="223.5" >as..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (33,751 samples, 0.09%)</title><rect x="826.7" y="117" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="829.71" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (40,232 samples, 0.11%)</title><rect x="846.1" y="133" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="849.11" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.form.AllAtOnceForm.assemble (2,384,922 samples, 6.66%)</title><rect x="800.5" y="197" width="78.7" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="803.54" y="207.5" >asQ.allat..</text>
+</g>
+<g >
+<title>CreateFunctionSpace (219,231 samples, 0.61%)</title><rect x="1161.5" y="213" width="7.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1164.47" y="223.5" ></text>
+</g>
+<g >
+<title>firedrake.linear_solver.LinearSolver.solve (463,233 samples, 1.29%)</title><rect x="1019.8" y="213" width="15.3" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1022.79" y="223.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.TestFunction (6,323 samples, 0.02%)</title><rect x="1037.3" y="213" width="0.2" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="1040.28" y="223.5" ></text>
+</g>
+<g >
+<title>PCApply (3,057,696 samples, 8.54%)</title><rect x="562.1" y="197" width="100.8" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="565.07" y="207.5" >PCApply</text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.boundary_nodes (86,889 samples, 0.24%)</title><rect x="299.3" y="213" width="2.8" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="302.25" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (396,681 samples, 1.11%)</title><rect x="866.1" y="133" width="13.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="869.08" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,391 samples, 0.01%)</title><rect x="857.6" y="101" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="860.55" y="111.5" ></text>
+</g>
+<g >
+<title>PCSetUp (3,951,782 samples, 11.04%)</title><rect x="665.4" y="213" width="130.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="668.43" y="223.5" >PCSetUp</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form8_cell_integral (3,207 samples, 0.01%)</title><rect x="541.5" y="133" width="0.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="544.46" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,879 samples, 0.01%)</title><rect x="859.5" y="101" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="862.50" y="111.5" ></text>
+</g>
+<g >
+<title>MatConvert (71,025 samples, 0.20%)</title><rect x="636.1" y="149" width="2.3" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="639.06" y="159.5" ></text>
+</g>
+<g >
+<title>ParLoopRednBegin (10,739 samples, 0.03%)</title><rect x="810.8" y="149" width="0.3" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="813.79" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.bcs.BCBase.set (13,494 samples, 0.04%)</title><rect x="561.4" y="165" width="0.5" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="564.44" y="175.5" ></text>
+</g>
+<g >
+<title>firedrake.interpolation.make_interpolator (746,629 samples, 2.09%)</title><rect x="1136.6" y="197" width="24.6" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1139.56" y="207.5" >f..</text>
+</g>
+<g >
+<title>CyclicReduction.preconditioner.CyclicReductionPC.get_factored_matrix (517,615 samples, 1.45%)</title><rect x="582.1" y="149" width="17.1" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="585.13" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (5,020 samples, 0.01%)</title><rect x="439.6" y="165" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="442.64" y="175.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (179,473 samples, 0.50%)</title><rect x="430.8" y="133" width="5.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="433.76" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.assign (11,577 samples, 0.03%)</title><rect x="469.1" y="197" width="0.4" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="472.11" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.assign.Assigner.assign (5,505 samples, 0.02%)</title><rect x="381.3" y="197" width="0.2" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="384.35" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_end (39,352 samples, 0.11%)</title><rect x="543.9" y="133" width="1.3" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="546.94" y="143.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (10,069 samples, 0.03%)</title><rect x="468.8" y="101" width="0.3" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="471.78" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form28_cell_integral (4,725 samples, 0.01%)</title><rect x="540.0" y="133" width="0.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="543.05" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (57,817 samples, 0.16%)</title><rect x="535.2" y="117" width="1.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="538.15" y="127.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (9,754 samples, 0.03%)</title><rect x="451.1" y="133" width="0.3" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="454.07" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.make_scalar_element (11,760 samples, 0.03%)</title><rect x="1168.7" y="213" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1171.70" y="223.5" ></text>
+</g>
+<g >
+<title>CreateFunctionSpace (146,583 samples, 0.41%)</title><rect x="1174.3" y="229" width="4.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1177.25" y="239.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.derivative (20,073 samples, 0.06%)</title><rect x="477.4" y="213" width="0.7" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="480.42" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (426,134 samples, 1.19%)</title><rect x="547.4" y="117" width="14.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="550.40" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,321 samples, 0.01%)</title><rect x="848.9" y="85" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="851.95" y="95.5" ></text>
+</g>
+<g >
+<title>BuildTwoSidedF (14,049 samples, 0.04%)</title><rect x="995.4" y="181" width="0.5" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="998.41" y="191.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (16,229 samples, 0.05%)</title><rect x="689.0" y="85" width="0.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="691.98" y="95.5" ></text>
+</g>
+<g >
+<title>SFSectionSF (6,686 samples, 0.02%)</title><rect x="1184.3" y="165" width="0.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1187.34" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form17_cell_integral (4,945 samples, 0.01%)</title><rect x="538.3" y="133" width="0.1" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="541.28" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.action (11,340 samples, 0.03%)</title><rect x="1009.5" y="181" width="0.4" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1012.51" y="191.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form22_cell_integral (35,628 samples, 0.10%)</title><rect x="829.6" y="149" width="1.1" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="832.56" y="159.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (16,377 samples, 0.05%)</title><rect x="722.9" y="69" width="0.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="725.87" y="79.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form16_cell_integral (7,248 samples, 0.02%)</title><rect x="538.0" y="133" width="0.3" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="541.04" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.solver.AllAtOnceSolver.__init__ (3,027,860 samples, 8.46%)</title><rect x="381.9" y="245" width="99.9" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="384.95" y="255.5" >asQ.allatonc..</text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (348,417 samples, 0.97%)</title><rect x="762.5" y="85" width="11.5" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="765.48" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (6,396 samples, 0.02%)</title><rect x="538.5" y="117" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="541.51" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.tsfc_interface.compile_form (38,186 samples, 0.11%)</title><rect x="1036.0" y="213" width="1.3" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1039.02" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (12,540 samples, 0.04%)</title><rect x="514.1" y="101" width="0.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="517.15" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.preconditioners.base.AllAtOncePCBase.setUp (3,840,578 samples, 10.73%)</title><rect x="669.1" y="197" width="126.6" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="672.10" y="207.5" >asQ.preconditio..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form15_cell_integral (41,805 samples, 0.12%)</title><rect x="816.9" y="149" width="1.3" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="819.87" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (5,634 samples, 0.02%)</title><rect x="1005.0" y="165" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1007.99" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (20,676 samples, 0.06%)</title><rect x="844.6" y="133" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="847.62" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form8_cell_integral (62,010 samples, 0.17%)</title><rect x="855.6" y="149" width="2.1" height="15.0" fill="rgb(248,202,48)" rx="2" ry="2" />
+<text  x="858.62" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form12_cell_integral (5,274 samples, 0.01%)</title><rect x="537.3" y="133" width="0.2" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="540.34" y="143.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (1,659,465 samples, 4.64%)</title><rect x="809.9" y="165" width="54.7" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="812.94" y="175.5" >ParLo..</text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (14,879 samples, 0.04%)</title><rect x="377.0" y="181" width="0.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="379.99" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (22,735 samples, 0.06%)</title><rect x="812.0" y="101" width="0.7" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="814.99" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_end (26,477 samples, 0.07%)</title><rect x="1172.6" y="229" width="0.9" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="1175.61" y="239.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (80,411 samples, 0.22%)</title><rect x="723.4" y="69" width="2.7" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="726.41" y="79.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form3_cell_integral (3,278 samples, 0.01%)</title><rect x="540.6" y="133" width="0.1" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="543.61" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.variational_solver.NonlinearVariationalSolver.__init__ (268,800 samples, 0.75%)</title><rect x="1010.9" y="197" width="8.9" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="1013.93" y="207.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form25_cell_integral (47,283 samples, 0.13%)</title><rect x="834.3" y="149" width="1.5" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="837.25" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (41,323 samples, 0.12%)</title><rect x="847.7" y="101" width="1.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="850.70" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (912,164 samples, 2.55%)</title><rect x="350.9" y="213" width="30.1" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="353.92" y="223.5" >fi..</text>
+</g>
+<g >
+<title>PCSetUp (401,164 samples, 1.12%)</title><rect x="586.0" y="133" width="13.2" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="588.97" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.update_time_halos (5,728 samples, 0.02%)</title><rect x="469.1" y="165" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="472.12" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (51,295 samples, 0.14%)</title><rect x="827.9" y="133" width="1.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="830.87" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (44,252 samples, 0.12%)</title><rect x="772.5" y="53" width="1.5" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="775.51" y="63.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (18,972 samples, 0.05%)</title><rect x="1004.5" y="181" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1007.55" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (33,314 samples, 0.09%)</title><rect x="812.7" y="133" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="815.75" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.local_to_global_begin (5,030 samples, 0.01%)</title><rect x="864.6" y="165" width="0.2" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="867.65" y="175.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_end (73,129 samples, 0.20%)</title><rect x="862.2" y="149" width="2.4" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="865.24" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,543 samples, 0.01%)</title><rect x="538.2" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="541.16" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (6,238 samples, 0.02%)</title><rect x="391.8" y="165" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="394.80" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (64,551 samples, 0.18%)</title><rect x="821.5" y="133" width="2.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="824.47" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.tsfc_interface.compile_form (462,610 samples, 1.29%)</title><rect x="546.2" y="149" width="15.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="549.19" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_set_#x7f7d402accb0_wrap_iop_iadd (50,604 samples, 0.14%)</title><rect x="511.4" y="149" width="1.6" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="514.36" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (34,727 samples, 0.10%)</title><rect x="402.6" y="117" width="1.1" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="405.58" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (25,601 samples, 0.07%)</title><rect x="842.4" y="101" width="0.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="845.41" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.assign (16,347 samples, 0.05%)</title><rect x="381.0" y="245" width="0.5" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="383.99" y="255.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (53,178 samples, 0.15%)</title><rect x="823.8" y="117" width="1.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="826.83" y="127.5" ></text>
+</g>
+<g >
+<title>VecScatterBegin (8,473 samples, 0.02%)</title><rect x="646.2" y="149" width="0.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="649.24" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form11_cell_integral (33,508 samples, 0.09%)</title><rect x="812.7" y="149" width="1.1" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="815.74" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (145,878 samples, 0.41%)</title><rect x="999.7" y="133" width="4.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="1002.73" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (31,395 samples, 0.09%)</title><rect x="839.1" y="117" width="1.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="842.05" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (23,745 samples, 0.07%)</title><rect x="820.3" y="101" width="0.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="823.28" y="111.5" ></text>
+</g>
+<g >
+<title>SFSetUp (6,293 samples, 0.02%)</title><rect x="788.1" y="133" width="0.2" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="791.13" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.preconditioners.base.AllAtOnceBlockPCBase.initialize (2,500,745 samples, 6.99%)</title><rect x="691.5" y="165" width="82.5" height="15.0" fill="rgb(231,121,28)" rx="2" ry="2" />
+<text  x="694.53" y="175.5" >asQ.preco..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form13_cell_integral (25,263 samples, 0.07%)</title><rect x="814.9" y="149" width="0.8" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="817.86" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form00_cell_integral (179,183 samples, 0.50%)</title><rect x="998.6" y="181" width="5.9" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1001.63" y="191.5" ></text>
+</g>
+<g >
+<title>SFBcastBegin (31,288 samples, 0.09%)</title><rect x="1171.6" y="213" width="1.0" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1174.58" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (15,149 samples, 0.04%)</title><rect x="507.0" y="117" width="0.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="510.00" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (14,869 samples, 0.04%)</title><rect x="1008.7" y="197" width="0.5" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1011.75" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (30,305 samples, 0.08%)</title><rect x="826.8" y="101" width="1.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="829.82" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (149,229 samples, 0.42%)</title><rect x="1058.1" y="197" width="4.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1061.06" y="207.5" ></text>
+</g>
+<g >
+<title>DMPlexDistCones (7,791 samples, 0.02%)</title><rect x="1184.3" y="181" width="0.3" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="1187.31" y="191.5" ></text>
+</g>
+<g >
+<title>Mesh Partition (3,177 samples, 0.01%)</title><rect x="1185.6" y="197" width="0.1" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1188.64" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.mesh.MeshTopology._facets (6,925 samples, 0.02%)</title><rect x="1178.9" y="165" width="0.2" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="1181.86" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form32_cell_integral (24,462 samples, 0.07%)</title><rect x="845.3" y="149" width="0.8" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="848.30" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (144,955 samples, 0.40%)</title><rect x="1174.3" y="197" width="4.8" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1177.31" y="207.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (349,404 samples, 0.98%)</title><rect x="533.7" y="149" width="11.5" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="536.72" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (24,243 samples, 0.07%)</title><rect x="825.7" y="117" width="0.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="828.68" y="127.5" ></text>
+</g>
+<g >
+<title>SNESSolve (309,779 samples, 0.87%)</title><rect x="1024.8" y="181" width="10.3" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="1027.85" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.project (1,931,024 samples, 5.39%)</title><rect x="974.0" y="245" width="63.7" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="977.03" y="255.5" >firedr..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form6_cell_integral (66,408 samples, 0.19%)</title><rect x="851.4" y="149" width="2.2" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="854.44" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (23,997 samples, 0.07%)</title><rect x="816.0" y="101" width="0.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="819.00" y="111.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (150,516 samples, 0.42%)</title><rect x="431.7" y="101" width="5.0" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="434.71" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form30_cell_integral (41,263 samples, 0.12%)</title><rect x="843.2" y="149" width="1.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="846.25" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (44,509 samples, 0.12%)</title><rect x="794.1" y="133" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="797.14" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,509 samples, 0.01%)</title><rect x="538.3" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="541.29" y="127.5" ></text>
+</g>
+<g >
+<title>SFUnpack (3,533 samples, 0.01%)</title><rect x="864.5" y="117" width="0.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="867.53" y="127.5" ></text>
+</g>
+<g >
+<title>Mesh Partition (59,104 samples, 0.17%)</title><rect x="1187.8" y="149" width="2.0" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1190.83" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form31_cell_integral (20,872 samples, 0.06%)</title><rect x="844.6" y="149" width="0.7" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="847.61" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (40,991 samples, 0.11%)</title><rect x="513.2" y="133" width="1.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="516.21" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.interpolation.SameMeshInterpolator._interpolate (1,633,420 samples, 4.56%)</title><rect x="1082.7" y="197" width="53.9" height="15.0" fill="rgb(216,54,12)" rx="2" ry="2" />
+<text  x="1085.72" y="207.5" >fired..</text>
+</g>
+<g >
+<title>CyclicReduction.preconditioner.CyclicReductionPC.forward_substitution (1,199,277 samples, 3.35%)</title><rect x="573.7" y="165" width="39.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="576.74" y="175.5" >Cyc..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form0_cell_integral (135,590 samples, 0.38%)</title><rect x="980.2" y="197" width="4.5" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="983.24" y="207.5" ></text>
+</g>
+<g >
+<title>BuildTwoSided (4,098 samples, 0.01%)</title><rect x="786.6" y="117" width="0.2" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="789.64" y="127.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (479,709 samples, 1.34%)</title><rect x="453.3" y="181" width="15.8" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="456.29" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,786 samples, 0.01%)</title><rect x="537.7" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="540.69" y="127.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_expression_kernel (265,933 samples, 0.74%)</title><rect x="1124.8" y="165" width="8.8" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="1127.83" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form28_cell_integral (36,778 samples, 0.10%)</title><rect x="838.9" y="149" width="1.2" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="841.88" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.derivative (21,140 samples, 0.06%)</title><rect x="1010.2" y="165" width="0.7" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1013.23" y="175.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.jacobian.AllAtOnceJacobian.mult (2,148,016 samples, 6.00%)</title><rect x="491.3" y="181" width="70.8" height="15.0" fill="rgb(234,133,32)" rx="2" ry="2" />
+<text  x="494.26" y="191.5" >asQ.alla..</text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (1,580,565 samples, 4.42%)</title><rect x="328.9" y="229" width="52.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="331.89" y="239.5" >asQ.a..</text>
+</g>
+<g >
+<title>pyop2.compilation.load (17,664 samples, 0.05%)</title><rect x="843.8" y="101" width="0.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="846.75" y="111.5" ></text>
+</g>
+<g >
+<title>SFBcastBegin (4,889 samples, 0.01%)</title><rect x="862.1" y="133" width="0.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="865.08" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (99,699 samples, 0.28%)</title><rect x="308.6" y="197" width="3.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="311.64" y="207.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form1_cell_integral (27,069 samples, 0.08%)</title><rect x="825.6" y="149" width="0.9" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="828.59" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (39,720 samples, 0.11%)</title><rect x="818.6" y="101" width="1.3" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="821.58" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (27,410 samples, 0.08%)</title><rect x="850.2" y="101" width="0.9" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="853.17" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.assign (3,089 samples, 0.01%)</title><rect x="436.7" y="197" width="0.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="439.67" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (44,228 samples, 0.12%)</title><rect x="535.6" y="101" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="538.60" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (989,853 samples, 2.77%)</title><rect x="404.0" y="181" width="32.7" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="407.04" y="191.5" >as..</text>
+</g>
+<g >
+<title>Mesh: numbering (3,232 samples, 0.01%)</title><rect x="1185.7" y="213" width="0.2" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="1188.75" y="223.5" ></text>
+</g>
+<g >
+<title>firedrake.function.CoordinatelessFunction.copy (30,470 samples, 0.09%)</title><rect x="972.9" y="229" width="1.0" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="975.92" y="239.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.assign (46,178 samples, 0.13%)</title><rect x="515.2" y="165" width="1.5" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="518.16" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (41,388 samples, 0.12%)</title><rect x="836.2" y="117" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="839.16" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (17,962 samples, 0.05%)</title><rect x="350.3" y="213" width="0.6" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="353.33" y="223.5" ></text>
+</g>
+<g >
+<title>SFSetUp (6,626 samples, 0.02%)</title><rect x="1184.3" y="149" width="0.3" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1187.35" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (37,072 samples, 0.10%)</title><rect x="846.2" y="117" width="1.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="849.22" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.assign.Assigner.assign (329,629 samples, 0.92%)</title><rect x="961.9" y="229" width="10.9" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="964.94" y="239.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (55,728 samples, 0.16%)</title><rect x="1152.4" y="181" width="1.9" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1155.42" y="191.5" ></text>
+</g>
+<g >
+<title>MatConvert (193,721 samples, 0.54%)</title><rect x="599.2" y="149" width="6.4" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="602.20" y="159.5" ></text>
+</g>
+<g >
+<title>CreateSparsity (62,722 samples, 0.18%)</title><rect x="992.9" y="197" width="2.1" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="995.90" y="207.5" ></text>
+</g>
+<g >
+<title>BuildTwoSidedF (19,340 samples, 0.05%)</title><rect x="786.1" y="133" width="0.7" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="789.14" y="143.5" ></text>
+</g>
+<g >
+<title>MatZeroInitial (9,643 samples, 0.03%)</title><rect x="997.9" y="197" width="0.4" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1000.95" y="207.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase._vs_op (11,500 samples, 0.03%)</title><rect x="469.1" y="181" width="0.4" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="472.11" y="191.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form20_cell_integral (6,235 samples, 0.02%)</title><rect x="539.0" y="133" width="0.2" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="541.96" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (37,920 samples, 0.11%)</title><rect x="535.7" y="85" width="1.2" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="538.65" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (57,768 samples, 0.16%)</title><rect x="840.2" y="117" width="2.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="843.25" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (11,990 samples, 0.03%)</title><rect x="509.3" y="101" width="0.3" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="512.25" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (10,422 samples, 0.03%)</title><rect x="653.7" y="85" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="656.68" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (7,914 samples, 0.02%)</title><rect x="839.8" y="85" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="842.83" y="95.5" ></text>
+</g>
+<g >
+<title>MatMult (24,185 samples, 0.07%)</title><rect x="1027.1" y="149" width="0.8" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="1030.09" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (94,840 samples, 0.26%)</title><rect x="981.6" y="165" width="3.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="984.58" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (61,697 samples, 0.17%)</title><rect x="840.1" y="133" width="2.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="843.12" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form27_cell_integral (3,840 samples, 0.01%)</title><rect x="539.9" y="133" width="0.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="542.92" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.assign.Assigner.assign (3,986 samples, 0.01%)</title><rect x="469.4" y="149" width="0.1" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="472.36" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.jacobian.AllAtOnceJacobian.update (76,825 samples, 0.21%)</title><rect x="880.2" y="197" width="2.5" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="883.17" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.tsfc_interface.compile_form (35,837 samples, 0.10%)</title><rect x="654.3" y="149" width="1.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="657.29" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,783 samples, 0.01%)</title><rect x="536.9" y="85" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="539.90" y="95.5" ></text>
+</g>
+<g >
+<title>Mesh Migration (4,658 samples, 0.01%)</title><rect x="1187.7" y="149" width="0.1" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="1190.67" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.assign (6,581 samples, 0.02%)</title><rect x="1034.6" y="149" width="0.2" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="1037.61" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,930 samples, 0.01%)</title><rect x="540.1" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="543.08" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_begin (47,141 samples, 0.13%)</title><rect x="1133.6" y="165" width="1.6" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1136.60" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_set_#x7f7a94ef1910_wrap_iop_iadd (51,934 samples, 0.15%)</title><rect x="509.6" y="149" width="1.8" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="512.65" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (11,257 samples, 0.03%)</title><rect x="851.1" y="101" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="854.07" y="111.5" ></text>
+</g>
+<g >
+<title>SNESJacobianEval (107,367 samples, 0.30%)</title><rect x="879.2" y="213" width="3.5" height="15.0" fill="rgb(249,204,49)" rx="2" ry="2" />
+<text  x="882.16" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (19,088 samples, 0.05%)</title><rect x="815.1" y="101" width="0.6" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="818.07" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (3,176 samples, 0.01%)</title><rect x="973.9" y="229" width="0.1" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="976.93" y="239.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form18_cell_integral (64,796 samples, 0.18%)</title><rect x="821.5" y="149" width="2.1" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="824.47" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (48,619 samples, 0.14%)</title><rect x="505.9" y="133" width="1.6" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="508.90" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (18,819 samples, 0.05%)</title><rect x="811.2" y="117" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="814.25" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (475,794 samples, 1.33%)</title><rect x="675.7" y="117" width="15.7" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="678.67" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (355,508 samples, 0.99%)</title><rect x="392.0" y="165" width="11.7" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="395.00" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (44,306 samples, 0.12%)</title><rect x="820.0" y="133" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="823.01" y="143.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (156,991 samples, 0.44%)</title><rect x="979.5" y="213" width="5.2" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="982.53" y="223.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.assign (12,903 samples, 0.04%)</title><rect x="1020.0" y="197" width="0.4" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="1022.98" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.local_to_global_begin (8,510 samples, 0.02%)</title><rect x="545.7" y="149" width="0.2" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="548.65" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (17,963 samples, 0.05%)</title><rect x="844.7" y="117" width="0.6" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="847.71" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.TrialFunction (5,942 samples, 0.02%)</title><rect x="1037.5" y="213" width="0.2" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1040.49" y="223.5" ></text>
+</g>
+<g >
+<title>MatAssemblyEnd (8,698 samples, 0.02%)</title><rect x="650.0" y="149" width="0.2" height="15.0" fill="rgb(213,37,9)" rx="2" ry="2" />
+<text  x="652.95" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (89,341 samples, 0.25%)</title><rect x="981.6" y="149" width="3.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="984.61" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.update_time_halos (8,383 samples, 0.02%)</title><rect x="800.9" y="181" width="0.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="803.88" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (5,043 samples, 0.01%)</title><rect x="1161.0" y="165" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1164.01" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form18_cell_integral (8,585 samples, 0.02%)</title><rect x="538.4" y="133" width="0.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="541.44" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (80,377 samples, 0.22%)</title><rect x="651.4" y="101" width="2.6" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="654.37" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,444 samples, 0.01%)</title><rect x="540.9" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="543.85" y="127.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form5_cell_integral (49,260 samples, 0.14%)</title><rect x="849.8" y="149" width="1.6" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="852.82" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (48,428 samples, 0.14%)</title><rect x="821.9" y="101" width="1.6" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="824.89" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (26,724 samples, 0.07%)</title><rect x="825.6" y="133" width="0.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="828.60" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_end (42,698 samples, 0.12%)</title><rect x="1135.2" y="165" width="1.4" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="1138.15" y="175.5" ></text>
+</g>
+<g >
+<title>all (35,795,965 samples, 100%)</title><rect x="10.0" y="293" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="303.5" ></text>
+</g>
+<g >
+<title>MatSolve (236,608 samples, 0.66%)</title><rect x="638.8" y="165" width="7.8" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="641.81" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,626 samples, 0.01%)</title><rect x="984.6" y="149" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="987.56" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (13,196 samples, 0.04%)</title><rect x="510.9" y="117" width="0.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="513.93" y="127.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form2_cell_integral (33,336 samples, 0.09%)</title><rect x="842.2" y="149" width="1.0" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="845.15" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (52,868 samples, 0.15%)</title><rect x="818.3" y="133" width="1.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="821.26" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.jacobian.AllAtOnceJacobian.__init__ (1,253,021 samples, 3.50%)</title><rect x="436.8" y="229" width="41.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="439.78" y="239.5" >asQ..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (26,995 samples, 0.08%)</title><rect x="830.8" y="117" width="0.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="833.82" y="127.5" ></text>
+</g>
+<g >
+<title>PCSetUpOnBlocks (24,835 samples, 0.07%)</title><rect x="1030.7" y="165" width="0.9" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1033.74" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (41,486 samples, 0.12%)</title><rect x="816.9" y="133" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="819.88" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (30,366 samples, 0.08%)</title><rect x="813.9" y="133" width="1.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="816.86" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunction.__init__ (481,093 samples, 1.34%)</title><rect x="453.2" y="197" width="15.9" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="456.25" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.sub (6,335 samples, 0.02%)</title><rect x="545.4" y="133" width="0.3" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="548.44" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.form.AllAtOnceForm.__init__ (1,157,031 samples, 3.23%)</title><rect x="290.7" y="245" width="38.1" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="293.71" y="255.5" >asQ..</text>
+</g>
+<g >
+<title>firedrake.assemble.assemble (247,503 samples, 0.69%)</title><rect x="647.3" y="165" width="8.2" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="650.32" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (29,281 samples, 0.08%)</title><rect x="791.9" y="85" width="1.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="794.92" y="95.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (106,494 samples, 0.30%)</title><rect x="650.5" y="149" width="3.5" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="653.51" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.global_to_local_begin (106,971 samples, 0.30%)</title><rect x="1169.1" y="229" width="3.5" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1172.09" y="239.5" ></text>
+</g>
+<g >
+<title>VecScatterBegin (4,916 samples, 0.01%)</title><rect x="1027.6" y="133" width="0.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="1030.64" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (52,652 samples, 0.15%)</title><rect x="821.9" y="117" width="1.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="824.87" y="127.5" ></text>
+</g>
+<g >
+<title>SFBcastBegin (32,671 samples, 0.09%)</title><rect x="1134.1" y="149" width="1.1" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="1137.08" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form00_cell_integral (98,499 samples, 0.28%)</title><rect x="650.8" y="133" width="3.2" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="653.77" y="143.5" ></text>
+</g>
+<g >
+<title>VecScatterBegin (7,762 samples, 0.02%)</title><rect x="612.8" y="133" width="0.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="615.83" y="143.5" ></text>
+</g>
+<g >
+<title>MatConvert (215,109 samples, 0.60%)</title><rect x="631.3" y="165" width="7.1" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="634.31" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_set_#x7f2e87824b30_wrap_iop_iadd (65,097 samples, 0.18%)</title><rect x="507.5" y="149" width="2.1" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="510.50" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (140,143 samples, 0.39%)</title><rect x="323.5" y="181" width="4.7" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="326.54" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.assemble.assemble (2,366,184 samples, 6.61%)</title><rect x="801.2" y="181" width="78.0" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="804.16" y="191.5" >firedrake..</text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (14,312 samples, 0.04%)</title><rect x="1016.7" y="181" width="0.5" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1019.73" y="191.5" ></text>
+</g>
+<g >
+<title>MatMultAdd (12,513 samples, 0.03%)</title><rect x="638.4" y="165" width="0.4" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="641.40" y="175.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase._vs_op (5,285 samples, 0.01%)</title><rect x="691.4" y="133" width="0.1" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="694.36" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (33,010 samples, 0.09%)</title><rect x="842.2" y="133" width="1.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="845.16" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (672,767 samples, 1.88%)</title><rect x="703.9" y="101" width="22.2" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="706.88" y="111.5" >f..</text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (17,502 samples, 0.05%)</title><rect x="452.7" y="101" width="0.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="455.67" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (49,935 samples, 0.14%)</title><rect x="451.6" y="117" width="1.6" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="454.60" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (38,328 samples, 0.11%)</title><rect x="837.6" y="133" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="840.61" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form7_cell_integral (5,557 samples, 0.02%)</title><rect x="541.3" y="133" width="0.2" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="544.27" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (5,794 samples, 0.02%)</title><rect x="1010.7" y="149" width="0.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1013.74" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,436 samples, 0.01%)</title><rect x="539.8" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="542.78" y="127.5" ></text>
+</g>
+<g >
+<title>DMPlexInterp (6,811 samples, 0.02%)</title><rect x="1189.8" y="197" width="0.2" height="15.0" fill="rgb(240,165,39)" rx="2" ry="2" />
+<text  x="1192.78" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (12,020 samples, 0.03%)</title><rect x="505.3" y="101" width="0.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="508.29" y="111.5" ></text>
+</g>
+<g >
+<title>PCApply (4,391 samples, 0.01%)</title><rect x="1028.7" y="117" width="0.2" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="1031.73" y="127.5" ></text>
+</g>
+<g >
+<title>PCSetUp (30,550 samples, 0.09%)</title><rect x="1029.7" y="165" width="1.0" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1032.73" y="175.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (790,037 samples, 2.21%)</title><rect x="302.1" y="213" width="26.1" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="305.12" y="223.5" >a..</text>
+</g>
+<g >
+<title>ParLoopRednEnd (12,728 samples, 0.04%)</title><rect x="979.8" y="197" width="0.4" height="15.0" fill="rgb(244,179,43)" rx="2" ry="2" />
+<text  x="982.82" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,684 samples, 0.01%)</title><rect x="537.2" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="540.22" y="127.5" ></text>
+</g>
+<g >
+<title>VecTDot (10,533 samples, 0.03%)</title><rect x="1029.4" y="149" width="0.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="1032.38" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form2_cell_integral (3,658 samples, 0.01%)</title><rect x="540.3" y="133" width="0.1" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="543.30" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,593 samples, 0.01%)</title><rect x="838.7" y="101" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="841.73" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form16_cell_integral (53,105 samples, 0.15%)</title><rect x="818.2" y="149" width="1.8" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="821.25" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (194,138 samples, 0.54%)</title><rect x="719.7" y="85" width="6.4" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="722.66" y="95.5" ></text>
+</g>
+<g >
+<title>firedrake.projection.Projector (29,179 samples, 0.08%)</title><rect x="1035.1" y="213" width="0.9" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1038.06" y="223.5" ></text>
+</g>
+<g >
+<title>asQ.preconditioners.base.AllAtOncePCBase.initialize (2,498,991 samples, 6.98%)</title><rect x="691.6" y="149" width="82.4" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="694.59" y="159.5" >asQ.preco..</text>
+</g>
+<g >
+<title>VecCopy (3,227 samples, 0.01%)</title><rect x="613.2" y="149" width="0.1" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="616.17" y="159.5" ></text>
+</g>
+<g >
+<title>BuildTwoSided (10,074 samples, 0.03%)</title><rect x="612.5" y="117" width="0.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="615.49" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (33,706 samples, 0.09%)</title><rect x="817.1" y="117" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="820.14" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.tsfc_interface.compile_form (45,484 samples, 0.13%)</title><rect x="794.1" y="149" width="1.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="797.10" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form14_cell_integral (5,955 samples, 0.02%)</title><rect x="537.6" y="133" width="0.2" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="540.62" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (964,315 samples, 2.69%)</title><rect x="742.2" y="101" width="31.8" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="745.18" y="111.5" >fi..</text>
+</g>
+<g >
+<title>CreateFunctionSpace (251,152 samples, 0.70%)</title><rect x="1054.7" y="229" width="8.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1057.70" y="239.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.copy (37,208 samples, 0.10%)</title><rect x="972.8" y="245" width="1.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="975.80" y="255.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (51,375 samples, 0.14%)</title><rect x="851.8" y="101" width="1.7" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="854.85" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (29,868 samples, 0.08%)</title><rect x="839.1" y="101" width="1.0" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="842.11" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (59,166 samples, 0.17%)</title><rect x="823.6" y="133" width="2.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="826.64" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.sendrecv (6,589 samples, 0.02%)</title><rect x="800.9" y="165" width="0.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="803.94" y="175.5" ></text>
+</g>
+<g >
+<title>MatZeroInitial (28,509 samples, 0.08%)</title><rect x="788.3" y="149" width="1.0" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="791.34" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (32,965 samples, 0.09%)</title><rect x="815.8" y="133" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="818.78" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (10,200 samples, 0.03%)</title><rect x="1036.9" y="181" width="0.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1039.95" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (6,559 samples, 0.02%)</title><rect x="412.8" y="165" width="0.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="415.82" y="175.5" ></text>
+</g>
+<g >
+<title>MatAssemblyBegin (4,705 samples, 0.01%)</title><rect x="649.8" y="149" width="0.2" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="652.80" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (37,189 samples, 0.10%)</title><rect x="828.3" y="101" width="1.3" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="831.34" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (61,427 samples, 0.17%)</title><rect x="855.6" y="133" width="2.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="858.64" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.bcs.BCBase.zero (12,576 samples, 0.04%)</title><rect x="545.2" y="149" width="0.5" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="548.24" y="159.5" ></text>
+</g>
+<g >
+<title>MatAssemblyEnd (62,841 samples, 0.18%)</title><rect x="995.9" y="197" width="2.0" height="15.0" fill="rgb(213,37,9)" rx="2" ry="2" />
+<text  x="998.88" y="207.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunction.__init__ (1,453,345 samples, 4.06%)</title><rect x="726.1" y="133" width="47.9" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="729.06" y="143.5" >asQ...</text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (369,692 samples, 1.03%)</title><rect x="424.5" y="149" width="12.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="427.49" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (141,461 samples, 0.40%)</title><rect x="686.7" y="101" width="4.7" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="689.69" y="111.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (109,370 samples, 0.31%)</title><rect x="789.3" y="149" width="3.6" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="792.28" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form4_cell_integral (72,101 samples, 0.20%)</title><rect x="847.4" y="149" width="2.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="850.44" y="159.5" ></text>
+</g>
+<g >
+<title>Main Stage (35,795,965 samples, 100.00%)</title><rect x="10.0" y="277" width="1180.0" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="13.00" y="287.5" >Main Stage</text>
+</g>
+<g >
+<title>KSPSolve (117,218 samples, 0.33%)</title><rect x="1025.9" y="165" width="3.8" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1028.87" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (58,891 samples, 0.16%)</title><rect x="857.7" y="133" width="1.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="860.68" y="143.5" ></text>
+</g>
+<g >
+<title>VecScatterBegin (6,417 samples, 0.02%)</title><rect x="605.8" y="133" width="0.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="608.80" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (47,404 samples, 0.13%)</title><rect x="857.9" y="101" width="1.6" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="860.93" y="111.5" ></text>
+</g>
+<g >
+<title>MatAssemblyBegin (27,465 samples, 0.08%)</title><rect x="995.0" y="197" width="0.9" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="997.97" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.assemble.assemble (1,357,935 samples, 3.79%)</title><rect x="516.7" y="165" width="44.7" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="519.68" y="175.5" >fire..</text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (10,047 samples, 0.03%)</title><rect x="381.2" y="213" width="0.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="384.20" y="223.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (145,951 samples, 0.41%)</title><rect x="1174.3" y="213" width="4.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1177.27" y="223.5" ></text>
+</g>
+<g >
+<title>VecCopy (17,556 samples, 0.05%)</title><rect x="646.6" y="165" width="0.6" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="649.61" y="175.5" ></text>
+</g>
+<g >
+<title>SNESSolve (12,157,832 samples, 33.96%)</title><rect x="482.3" y="229" width="400.8" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="485.33" y="239.5" >SNESSolve</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form5_cell_integral (4,088 samples, 0.01%)</title><rect x="540.8" y="133" width="0.2" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="543.83" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.assign (6,388 samples, 0.02%)</title><rect x="561.5" y="149" width="0.2" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="564.51" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (22,582 samples, 0.06%)</title><rect x="814.9" y="117" width="0.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="817.95" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (67,215 samples, 0.19%)</title><rect x="651.5" y="85" width="2.2" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="654.46" y="95.5" ></text>
+</g>
+<g >
+<title>SFBcastEnd (3,460 samples, 0.01%)</title><rect x="1173.4" y="213" width="0.1" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="1176.37" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (65,568 samples, 0.18%)</title><rect x="851.5" y="133" width="2.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="854.47" y="143.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (27,837 samples, 0.08%)</title><rect x="725.1" y="37" width="1.0" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="728.14" y="47.5" ></text>
+</g>
+<g >
+<title>Parloop_set_#x7f0c00024b30_wrap_iop_iadd (55,236 samples, 0.15%)</title><rect x="505.7" y="149" width="1.8" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="508.68" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.sendrecv (4,018 samples, 0.01%)</title><rect x="469.2" y="149" width="0.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="472.17" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (28,328 samples, 0.08%)</title><rect x="842.3" y="117" width="0.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="845.32" y="127.5" ></text>
+</g>
+<g >
+<title>PCSetUp (12,185 samples, 0.03%)</title><rect x="1031.2" y="149" width="0.4" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1034.16" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (496,558 samples, 1.39%)</title><rect x="436.9" y="181" width="16.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="439.88" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (13,645 samples, 0.04%)</title><rect x="507.1" y="101" width="0.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="510.05" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.make_scalar_element (15,637 samples, 0.04%)</title><rect x="1056.0" y="213" width="0.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1059.05" y="223.5" ></text>
+</g>
+<g >
+<title>DMPlexDistribute (66,692 samples, 0.19%)</title><rect x="1187.6" y="165" width="2.2" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1190.58" y="175.5" ></text>
+</g>
+<g >
+<title>ApplyBC (9,325 samples, 0.03%)</title><rect x="388.7" y="197" width="0.3" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="391.71" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (136,036 samples, 0.38%)</title><rect x="1164.2" y="181" width="4.5" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1167.22" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.tsfc_interface.compile_form (426,495 samples, 1.19%)</title><rect x="865.1" y="165" width="14.1" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="868.10" y="175.5" ></text>
+</g>
+<g >
+<title>MatSolve (214,407 samples, 0.60%)</title><rect x="606.1" y="149" width="7.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="609.10" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (1,452,809 samples, 4.06%)</title><rect x="726.1" y="117" width="47.9" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="729.08" y="127.5" >asQ...</text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.send (357,018 samples, 1.00%)</title><rect x="948.4" y="245" width="11.7" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="951.37" y="255.5" ></text>
+</g>
+<g >
+<title>PCApply (29,934 samples, 0.08%)</title><rect x="1027.9" y="149" width="1.0" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="1030.89" y="159.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (7,100 samples, 0.02%)</title><rect x="402.2" y="133" width="0.2" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="405.21" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (55,587 samples, 0.16%)</title><rect x="1020.4" y="197" width="1.8" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="1023.40" y="207.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (8,881 samples, 0.02%)</title><rect x="430.5" y="133" width="0.3" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="433.47" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.assign.Assigner.assign (38,368 samples, 0.11%)</title><rect x="1021.0" y="181" width="1.2" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1023.97" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (46,593 samples, 0.13%)</title><rect x="840.4" y="101" width="1.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="843.37" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (27,553 samples, 0.08%)</title><rect x="812.9" y="101" width="0.9" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="815.94" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (43,608 samples, 0.12%)</title><rect x="511.6" y="133" width="1.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="514.59" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (157,889 samples, 0.44%)</title><rect x="1163.5" y="197" width="5.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1166.50" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.local_to_global_begin (59,716 samples, 0.17%)</title><rect x="1005.6" y="213" width="2.0" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1008.60" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,376 samples, 0.01%)</title><rect x="819.9" y="101" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="822.89" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (35,690 samples, 0.10%)</title><rect x="654.3" y="133" width="1.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="657.30" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (125,433 samples, 0.35%)</title><rect x="1129.5" y="133" width="4.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1132.47" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase._vs_op (16,296 samples, 0.05%)</title><rect x="381.0" y="229" width="0.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="383.99" y="239.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (26,264 samples, 0.07%)</title><rect x="811.9" y="133" width="0.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="814.88" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (6,195 samples, 0.02%)</title><rect x="984.4" y="133" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="987.35" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (73,704 samples, 0.21%)</title><rect x="831.8" y="117" width="2.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="834.82" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (8,321 samples, 0.02%)</title><rect x="844.3" y="101" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="847.34" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form26_cell_integral (5,399 samples, 0.02%)</title><rect x="539.7" y="133" width="0.2" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="542.74" y="143.5" ></text>
+</g>
+<g >
+<title>VecAYPX (12,546 samples, 0.04%)</title><rect x="663.7" y="197" width="0.4" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="666.70" y="207.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form9_cell_integral (59,498 samples, 0.17%)</title><rect x="857.7" y="149" width="1.9" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="860.66" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (346,729 samples, 0.97%)</title><rect x="961.4" y="245" width="11.4" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="964.37" y="255.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.local_to_global_end (11,678 samples, 0.03%)</title><rect x="1007.6" y="213" width="0.4" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="1010.57" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (24,937 samples, 0.07%)</title><rect x="814.9" y="133" width="0.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="817.87" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (50,153 samples, 0.14%)</title><rect x="823.9" y="101" width="1.7" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="826.93" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form7_cell_integral (60,348 samples, 0.17%)</title><rect x="853.6" y="149" width="2.0" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="856.63" y="159.5" ></text>
+</g>
+<g >
+<title>MatLUFactorSym (210,474 samples, 0.59%)</title><rect x="624.4" y="133" width="6.9" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="627.37" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form10_cell_integral (4,302 samples, 0.01%)</title><rect x="537.1" y="133" width="0.1" height="15.0" fill="rgb(234,133,31)" rx="2" ry="2" />
+<text  x="540.06" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (36,351 samples, 0.10%)</title><rect x="834.6" y="117" width="1.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="837.61" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (8,767 samples, 0.02%)</title><rect x="1034.3" y="149" width="0.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1037.33" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.solving_utils._SNESContext.__init__ (78,576 samples, 0.22%)</title><rect x="1017.2" y="181" width="2.6" height="15.0" fill="rgb(237,151,36)" rx="2" ry="2" />
+<text  x="1020.20" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (9,227 samples, 0.03%)</title><rect x="703.6" y="101" width="0.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="706.58" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (13,797 samples, 0.04%)</title><rect x="514.1" y="117" width="0.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="517.11" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (45,355 samples, 0.13%)</title><rect x="849.9" y="133" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="852.95" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form29_cell_integral (62,529 samples, 0.17%)</title><rect x="840.1" y="149" width="2.1" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="843.09" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,989 samples, 0.01%)</title><rect x="541.3" y="117" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="544.29" y="127.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (190,219 samples, 0.53%)</title><rect x="998.3" y="197" width="6.2" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1001.27" y="207.5" ></text>
+</g>
+<g >
+<title>CyclicReduction.preconditioner.CyclicReductionPC.initialize (3,840,171 samples, 10.73%)</title><rect x="669.1" y="181" width="126.6" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="672.11" y="191.5" >CyclicReduction..</text>
+</g>
+<g >
+<title>pyop2.compilation.load (26,152 samples, 0.07%)</title><rect x="834.6" y="101" width="0.9" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="837.64" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form27_cell_integral (41,133 samples, 0.11%)</title><rect x="837.5" y="149" width="1.4" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="840.52" y="159.5" ></text>
+</g>
+<g >
+<title>MatAssemblyEnd (47,361 samples, 0.13%)</title><rect x="786.8" y="149" width="1.5" height="15.0" fill="rgb(213,37,9)" rx="2" ry="2" />
+<text  x="789.78" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (123,464 samples, 0.34%)</title><rect x="1129.5" y="117" width="4.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="1132.53" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.__init__ (1,415,052 samples, 3.95%)</title><rect x="883.1" y="245" width="46.7" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="886.11" y="255.5" >fire..</text>
+</g>
+<g >
+<title>firedrake.functionspace.VectorFunctionSpace (240,070 samples, 0.67%)</title><rect x="1161.2" y="229" width="7.9" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1164.17" y="239.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (134,313 samples, 0.38%)</title><rect x="1164.3" y="165" width="4.4" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1167.27" y="175.5" ></text>
+</g>
+<g >
+<title>SFSetGraph (3,115 samples, 0.01%)</title><rect x="612.0" y="133" width="0.1" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="615.02" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (88,079 samples, 0.25%)</title><rect x="400.8" y="149" width="2.9" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="403.82" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (51,152 samples, 0.14%)</title><rect x="835.8" y="133" width="1.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="838.84" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,351 samples, 0.01%)</title><rect x="539.6" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="542.60" y="127.5" ></text>
+</g>
+<g >
+<title>asQ.preconditioners.base.AllAtOncePCBase.apply (3,040,186 samples, 8.49%)</title><rect x="562.6" y="181" width="100.3" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="565.64" y="191.5" >asQ.precondi..</text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (716,992 samples, 2.00%)</title><rect x="413.0" y="165" width="23.7" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="416.04" y="175.5" >f..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,442 samples, 0.01%)</title><rect x="846.0" y="101" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="848.99" y="111.5" ></text>
+</g>
+<g >
+<title>CreateMesh (90,481 samples, 0.25%)</title><rect x="1186.8" y="197" width="3.0" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1189.79" y="207.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.update_time_halos (8,846 samples, 0.02%)</title><rect x="516.4" y="149" width="0.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="519.39" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form6_cell_integral (9,297 samples, 0.03%)</title><rect x="541.0" y="133" width="0.3" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="543.97" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (9,064 samples, 0.03%)</title><rect x="834.0" y="101" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="836.95" y="111.5" ></text>
+</g>
+<g >
+<title>SFBcastBegin (9,789 samples, 0.03%)</title><rect x="543.6" y="117" width="0.3" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="546.62" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (6,672 samples, 0.02%)</title><rect x="541.6" y="117" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="544.58" y="127.5" ></text>
+</g>
+<g >
+<title>MatMult (7,718 samples, 0.02%)</title><rect x="1034.1" y="149" width="0.2" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="1037.07" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.assign (76,692 samples, 0.21%)</title><rect x="880.2" y="181" width="2.5" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="883.17" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.local_to_global_map (8,315 samples, 0.02%)</title><rect x="654.0" y="149" width="0.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="657.02" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (4,234 samples, 0.01%)</title><rect x="675.5" y="117" width="0.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="678.53" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.assemble.assemble (656,323 samples, 1.83%)</title><rect x="774.0" y="165" width="21.6" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="776.97" y="175.5" >f..</text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (7,597 samples, 0.02%)</title><rect x="882.4" y="149" width="0.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="885.45" y="159.5" ></text>
+</g>
+<g >
+<title>MatLUFactorNum (144,145 samples, 0.40%)</title><rect x="586.4" y="117" width="4.7" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="589.37" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.sendrecv (6,192 samples, 0.02%)</title><rect x="516.5" y="133" width="0.2" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="519.48" y="143.5" ></text>
+</g>
+<g >
+<title>SFBcastEnd (4,880 samples, 0.01%)</title><rect x="545.1" y="117" width="0.1" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="548.08" y="127.5" ></text>
+</g>
+<g >
+<title>MatAssemblyBegin (56,364 samples, 0.16%)</title><rect x="784.9" y="149" width="1.9" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="787.92" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (194,742 samples, 0.54%)</title><rect x="1056.6" y="213" width="6.4" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="1059.56" y="223.5" ></text>
+</g>
+<g >
+<title>CreateMesh (69,353 samples, 0.19%)</title><rect x="1187.5" y="181" width="2.3" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1190.49" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.make_scalar_element (11,316 samples, 0.03%)</title><rect x="1163.1" y="197" width="0.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1166.12" y="207.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (13,452 samples, 0.04%)</title><rect x="690.9" y="53" width="0.5" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="693.91" y="63.5" ></text>
+</g>
+<g >
+<title>firedrake.utility_meshes.SquareMesh (103,484 samples, 0.29%)</title><rect x="1186.6" y="229" width="3.4" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="1189.59" y="239.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceCofunction.__init__ (496,665 samples, 1.39%)</title><rect x="436.9" y="197" width="16.3" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="439.88" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (19,073 samples, 0.05%)</title><rect x="845.5" y="117" width="0.6" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="848.48" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.get_map (6,412 samples, 0.02%)</title><rect x="1154.3" y="181" width="0.2" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="1157.26" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (54,041 samples, 0.15%)</title><rect x="853.8" y="117" width="1.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="856.84" y="127.5" ></text>
+</g>
+<g >
+<title>MatZeroInitial (8,256 samples, 0.02%)</title><rect x="650.2" y="149" width="0.3" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="653.24" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (80,297 samples, 0.22%)</title><rect x="790.2" y="117" width="2.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="793.24" y="127.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceCofunction.__init__ (790,152 samples, 2.21%)</title><rect x="302.1" y="229" width="26.1" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="305.12" y="239.5" >a..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form26_cell_integral (51,912 samples, 0.15%)</title><rect x="835.8" y="149" width="1.7" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="838.81" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form17_cell_integral (44,545 samples, 0.12%)</title><rect x="820.0" y="149" width="1.5" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="823.00" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.local_to_global_end (8,704 samples, 0.02%)</title><rect x="864.8" y="165" width="0.3" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="867.81" y="175.5" ></text>
+</g>
+<g >
+<title>firedrake.output.vtk_output.VTKFile.write (4,119,593 samples, 11.51%)</title><rect x="1037.7" y="245" width="135.8" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1040.69" y="255.5" >firedrake.output...</text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (249,386 samples, 0.70%)</title><rect x="372.8" y="197" width="8.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="375.77" y="207.5" ></text>
+</g>
+<g >
+<title>CreateMesh (227,591 samples, 0.64%)</title><rect x="1179.1" y="229" width="7.5" height="15.0" fill="rgb(248,201,48)" rx="2" ry="2" />
+<text  x="1182.08" y="239.5" ></text>
+</g>
+<g >
+<title>VecAXPY (3,742 samples, 0.01%)</title><rect x="1028.9" y="149" width="0.1" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="1031.87" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (52,854 samples, 0.15%)</title><rect x="772.2" y="69" width="1.8" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="775.23" y="79.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.zero (12,711 samples, 0.04%)</title><rect x="381.5" y="245" width="0.4" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="384.53" y="255.5" ></text>
+</g>
+<g >
+<title>SFBcastEnd (8,925 samples, 0.02%)</title><rect x="864.4" y="133" width="0.2" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="867.35" y="143.5" ></text>
+</g>
+<g >
+<title>ParLoopExecute (337,631 samples, 0.94%)</title><rect x="503.4" y="165" width="11.2" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="506.43" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (68,355 samples, 0.19%)</title><rect x="847.6" y="117" width="2.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="850.56" y="127.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.update_time_halos (5,571 samples, 0.02%)</title><rect x="381.0" y="213" width="0.2" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="384.02" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (45,207 samples, 0.13%)</title><rect x="504.2" y="133" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="507.19" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.variational_solver.NonlinearVariationalProblem.__init__ (31,706 samples, 0.09%)</title><rect x="1009.9" y="181" width="1.0" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="1012.88" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (43,503 samples, 0.12%)</title><rect x="856.1" y="101" width="1.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="859.12" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (55,760 samples, 0.16%)</title><rect x="689.5" y="85" width="1.9" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="692.52" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (21,225 samples, 0.06%)</title><rect x="825.8" y="101" width="0.7" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="828.78" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceCofunction.__init__ (1,044,633 samples, 2.92%)</title><rect x="691.6" y="133" width="34.5" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="694.62" y="143.5" >as..</text>
+</g>
+<g >
+<title>MatLUFactorNum (196,993 samples, 0.55%)</title><rect x="617.9" y="133" width="6.5" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="620.88" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.variational_solver.NonlinearVariationalSolver.solve (389,129 samples, 1.09%)</title><rect x="1022.2" y="197" width="12.9" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1025.23" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (55,154 samples, 0.15%)</title><rect x="1063.0" y="229" width="1.8" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="1065.98" y="239.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,352 samples, 0.01%)</title><rect x="538.9" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="541.85" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.action (240,554 samples, 0.67%)</title><rect x="469.5" y="213" width="7.9" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="472.49" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (94,884 samples, 0.27%)</title><rect x="650.9" y="117" width="3.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="653.89" y="127.5" ></text>
+</g>
+<g >
+<title>BuildTwoSided (3,293 samples, 0.01%)</title><rect x="1184.5" y="133" width="0.1" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1187.46" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form12_cell_integral (30,768 samples, 0.09%)</title><rect x="813.8" y="149" width="1.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="816.85" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (28,021 samples, 0.08%)</title><rect x="815.9" y="117" width="1.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="818.95" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (57,757 samples, 0.16%)</title><rect x="326.3" y="149" width="1.9" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="329.26" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (361,329 samples, 1.01%)</title><rect x="457.2" y="165" width="11.9" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="460.20" y="175.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (7,619 samples, 0.02%)</title><rect x="467.6" y="133" width="0.3" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="470.65" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (234,292 samples, 0.65%)</title><rect x="1125.9" y="149" width="7.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1128.88" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (34,152 samples, 0.10%)</title><rect x="843.5" y="117" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="846.48" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (53,015 samples, 0.15%)</title><rect x="857.9" y="117" width="1.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="860.88" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (48,627 samples, 0.14%)</title><rect x="856.1" y="117" width="1.6" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="859.06" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (38,751 samples, 0.11%)</title><rect x="402.4" y="133" width="1.3" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="405.45" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.recv (221,529 samples, 0.62%)</title><rect x="655.5" y="165" width="7.3" height="15.0" fill="rgb(218,59,14)" rx="2" ry="2" />
+<text  x="658.48" y="175.5" ></text>
+</g>
+<g >
+<title>SNESFunctionEval (2,531,788 samples, 7.07%)</title><rect x="795.7" y="213" width="83.5" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="798.70" y="223.5" >SNESFunct..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form0_cell_integral (59,437 samples, 0.17%)</title><rect x="535.1" y="133" width="2.0" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="538.10" y="143.5" ></text>
+</g>
+<g >
+<title>BuildTwoSided (4,256 samples, 0.01%)</title><rect x="646.1" y="133" width="0.1" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="649.10" y="143.5" ></text>
+</g>
+<g >
+<title>CyclicReduction.preconditioner.CyclicReductionPC.get_factored_matrix (547,073 samples, 1.53%)</title><rect x="613.3" y="165" width="18.0" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="616.28" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (7,396 samples, 0.02%)</title><rect x="841.9" y="101" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="844.91" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form1_cell_integral (4,251 samples, 0.01%)</title><rect x="538.8" y="133" width="0.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="541.82" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (203,436 samples, 0.57%)</title><rect x="1154.5" y="181" width="6.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1157.47" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.interpolate (2,923,495 samples, 8.17%)</title><rect x="1064.8" y="229" width="96.4" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1067.80" y="239.5" >firedrake.f..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (147,830 samples, 0.41%)</title><rect x="999.7" y="149" width="4.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1002.66" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (5,604 samples, 0.02%)</title><rect x="1008.6" y="197" width="0.1" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1011.56" y="207.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form25_cell_integral (5,073 samples, 0.01%)</title><rect x="539.6" y="133" width="0.1" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="542.58" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.constant.Constant.assign (9,177 samples, 0.03%)</title><rect x="403.7" y="197" width="0.3" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="406.72" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (7,039 samples, 0.02%)</title><rect x="299.0" y="213" width="0.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="302.02" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,510 samples, 0.01%)</title><rect x="855.3" y="85" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="858.28" y="95.5" ></text>
+</g>
+<g >
+<title>firedrake.halo.Halo.local_to_global_end (7,941 samples, 0.02%)</title><rect x="545.9" y="149" width="0.3" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="548.93" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.ensemble.Ensemble.recv (564,641 samples, 1.58%)</title><rect x="929.8" y="245" width="18.6" height="15.0" fill="rgb(218,59,14)" rx="2" ry="2" />
+<text  x="932.76" y="255.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (147,758 samples, 0.41%)</title><rect x="1058.1" y="181" width="4.9" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1061.11" y="191.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,516 samples, 0.01%)</title><rect x="819.7" y="85" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="822.74" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (35,294 samples, 0.10%)</title><rect x="829.6" y="133" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="832.57" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (14,143 samples, 0.04%)</title><rect x="845.5" y="101" width="0.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="848.52" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (10,830 samples, 0.03%)</title><rect x="795.2" y="117" width="0.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="798.25" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (12,211 samples, 0.03%)</title><rect x="381.5" y="229" width="0.4" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="384.55" y="239.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (5,209 samples, 0.01%)</title><rect x="837.3" y="101" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="840.35" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.projection.project (1,929,595 samples, 5.39%)</title><rect x="974.1" y="229" width="63.6" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="977.08" y="239.5" >firedr..</text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (10,945 samples, 0.03%)</title><rect x="741.8" y="101" width="0.4" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="744.82" y="111.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form21_cell_integral (3,425 samples, 0.01%)</title><rect x="539.2" y="133" width="0.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="542.17" y="143.5" ></text>
+</g>
+<g >
+<title>SNESFunctionEval (99,341 samples, 0.28%)</title><rect x="1031.6" y="165" width="3.2" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="1034.56" y="175.5" ></text>
+</g>
+<g >
+<title>firedrake.ufl_expr.FacetNormal (397,414 samples, 1.11%)</title><rect x="1173.5" y="245" width="13.1" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="1176.49" y="255.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (64,444 samples, 0.18%)</title><rect x="326.0" y="165" width="2.2" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="329.04" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (22,045 samples, 0.06%)</title><rect x="817.2" y="101" width="0.7" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="820.17" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (8,586 samples, 0.02%)</title><rect x="541.0" y="117" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="543.99" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.__init__ (4,349 samples, 0.01%)</title><rect x="545.5" y="117" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="548.51" y="127.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.copy (639,816 samples, 1.79%)</title><rect x="670.4" y="165" width="21.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="673.44" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (37,643 samples, 0.11%)</title><rect x="1036.0" y="197" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1039.04" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (40,347 samples, 0.11%)</title><rect x="826.5" y="133" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="829.49" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (25,698 samples, 0.07%)</title><rect x="814.0" y="101" width="0.9" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="817.01" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (21,405 samples, 0.06%)</title><rect x="811.2" y="133" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="814.16" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form14_cell_integral (35,647 samples, 0.10%)</title><rect x="815.7" y="149" width="1.2" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="818.69" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (32,799 samples, 0.09%)</title><rect x="829.7" y="117" width="1.0" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="832.66" y="127.5" ></text>
+</g>
+<g >
+<title>VecCopy (16,937 samples, 0.05%)</title><rect x="800.0" y="197" width="0.5" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="802.98" y="207.5" ></text>
+</g>
+<g >
+<title>SFSetUp (21,435 samples, 0.06%)</title><rect x="612.1" y="133" width="0.7" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="615.12" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (630,062 samples, 1.76%)</title><rect x="670.6" y="133" width="20.8" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="673.58" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (22,980 samples, 0.06%)</title><rect x="849.1" y="101" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="852.06" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.assign (5,581 samples, 0.02%)</title><rect x="469.3" y="165" width="0.2" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="472.31" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (462,485 samples, 1.29%)</title><rect x="546.2" y="133" width="15.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="549.20" y="143.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form24_cell_integral (3,228 samples, 0.01%)</title><rect x="539.5" y="133" width="0.1" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="542.47" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunction.__init__ (1,581,825 samples, 4.42%)</title><rect x="328.8" y="245" width="52.2" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="331.85" y="255.5" >asQ.a..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,400 samples, 0.01%)</title><rect x="537.4" y="117" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="540.37" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (12,855 samples, 0.04%)</title><rect x="505.3" y="117" width="0.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="508.26" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake (28,627,160 samples, 79.97%)</title><rect x="246.3" y="261" width="943.7" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="249.32" y="271.5" >firedrake</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (21,669 samples, 0.06%)</title><rect x="654.8" y="117" width="0.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="657.76" y="127.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form3_cell_integral (40,513 samples, 0.11%)</title><rect x="846.1" y="149" width="1.3" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="849.10" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form9_cell_integral (7,199 samples, 0.02%)</title><rect x="541.6" y="133" width="0.2" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="544.56" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (52,668 samples, 0.15%)</title><rect x="507.9" y="133" width="1.7" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="510.91" y="143.5" ></text>
+</g>
+<g >
+<title>KSPSolve (5,486,329 samples, 15.33%)</title><rect x="484.6" y="213" width="180.8" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="487.58" y="223.5" >KSPSolve</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form13_cell_integral (3,205 samples, 0.01%)</title><rect x="537.5" y="133" width="0.1" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="540.51" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (14,224 samples, 0.04%)</title><rect x="509.2" y="117" width="0.4" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="512.18" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.constant.Constant.assign (20,793 samples, 0.06%)</title><rect x="328.2" y="229" width="0.6" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="331.16" y="239.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (40,778 samples, 0.11%)</title><rect x="843.3" y="133" width="1.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="846.27" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,102 samples, 0.01%)</title><rect x="847.3" y="85" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="850.34" y="95.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (32,300 samples, 0.09%)</title><rect x="468.0" y="117" width="1.1" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="471.04" y="127.5" ></text>
+</g>
+<g >
+<title>VecCopy (29,253 samples, 0.08%)</title><rect x="880.9" y="165" width="1.0" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="883.93" y="175.5" ></text>
+</g>
+<g >
+<title>VecAXPY (25,487 samples, 0.07%)</title><rect x="662.9" y="197" width="0.8" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="665.86" y="207.5" ></text>
+</g>
+<g >
+<title>MatMult (2,155,020 samples, 6.02%)</title><rect x="491.0" y="197" width="71.1" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="494.03" y="207.5" >MatMult</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form10_cell_integral (26,501 samples, 0.07%)</title><rect x="811.9" y="149" width="0.8" height="15.0" fill="rgb(234,133,31)" rx="2" ry="2" />
+<text  x="814.87" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form0_cell_integral (22,091 samples, 0.06%)</title><rect x="811.1" y="149" width="0.8" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="814.14" y="159.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceCofunction.__init__ (446,217 samples, 1.25%)</title><rect x="389.0" y="197" width="14.7" height="15.0" fill="rgb(205,4,1)" rx="2" ry="2" />
+<text  x="392.01" y="207.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunction.__init__ (990,261 samples, 2.77%)</title><rect x="404.0" y="197" width="32.7" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="407.03" y="207.5" >as..</text>
+</g>
+<g >
+<title>pyop2: cache wrapper (59,582 samples, 0.17%)</title><rect x="853.7" y="133" width="1.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="856.65" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (36,743 samples, 0.10%)</title><rect x="467.9" y="133" width="1.2" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="470.90" y="143.5" ></text>
+</g>
+<g >
+<title>BuildTwoSided (3,982 samples, 0.01%)</title><rect x="995.7" y="165" width="0.2" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="998.75" y="175.5" ></text>
+</g>
+<g >
+<title>SNESJacobianEval (6,955 samples, 0.02%)</title><rect x="1034.8" y="165" width="0.3" height="15.0" fill="rgb(249,204,49)" rx="2" ry="2" />
+<text  x="1037.83" y="175.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (9,014 samples, 0.03%)</title><rect x="325.7" y="165" width="0.3" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="328.74" y="175.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.solver.AllAtOnceSolver.solve (12,175,110 samples, 34.01%)</title><rect x="481.8" y="245" width="401.3" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="484.76" y="255.5" >asQ.allatonce.solver.AllAtOnceSolver.solve</text>
+</g>
+<g >
+<title>DMPlexDistLabels (32,745 samples, 0.09%)</title><rect x="1184.6" y="181" width="1.0" height="15.0" fill="rgb(231,121,28)" rx="2" ry="2" />
+<text  x="1187.56" y="191.5" ></text>
+</g>
+<g >
+<title>VecNorm (11,794 samples, 0.03%)</title><rect x="1029.0" y="149" width="0.4" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1032.00" y="159.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (11,961 samples, 0.03%)</title><rect x="511.0" y="101" width="0.4" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="513.97" y="111.5" ></text>
+</g>
+<g >
+<title>MatLUFactorSym (245,045 samples, 0.68%)</title><rect x="591.1" y="117" width="8.1" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="594.12" y="127.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form15_cell_integral (6,725 samples, 0.02%)</title><rect x="537.8" y="133" width="0.2" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="540.82" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (17,153 samples, 0.05%)</title><rect x="811.3" y="101" width="0.6" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="814.30" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (7,508 samples, 0.02%)</title><rect x="456.9" y="165" width="0.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="459.95" y="175.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form4_cell_integral (3,534 samples, 0.01%)</title><rect x="540.7" y="133" width="0.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="543.71" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (4,585 samples, 0.01%)</title><rect x="816.6" y="85" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="819.64" y="95.5" ></text>
+</g>
+<g >
+<title>MatConvert (101,291 samples, 0.28%)</title><rect x="602.2" y="133" width="3.4" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="605.24" y="143.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (22,176 samples, 0.06%)</title><rect x="327.4" y="133" width="0.8" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="330.43" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (3,993 samples, 0.01%)</title><rect x="835.4" y="85" width="0.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="838.37" y="95.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (24,269 samples, 0.07%)</title><rect x="845.3" y="133" width="0.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="848.30" y="143.5" ></text>
+</g>
+<g >
+<title>firedrake.function.Function.__init__ (37,481 samples, 0.10%)</title><rect x="960.1" y="245" width="1.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="963.14" y="255.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (71,460 samples, 0.20%)</title><rect x="847.5" y="133" width="2.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="850.46" y="143.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.function.AllAtOnceFunctionBase.__init__ (446,171 samples, 1.25%)</title><rect x="389.0" y="181" width="14.7" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="392.02" y="191.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (90,344 samples, 0.25%)</title><rect x="378.0" y="165" width="3.0" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="381.01" y="175.5" ></text>
+</g>
+<g >
+<title>ApplyBC (9,349 samples, 0.03%)</title><rect x="800.6" y="181" width="0.3" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="803.57" y="191.5" ></text>
+</g>
+<g >
+<title>KSPSetUp (6,284 samples, 0.02%)</title><rect x="1025.7" y="165" width="0.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="1028.66" y="175.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (55,752 samples, 0.16%)</title><rect x="851.8" y="117" width="1.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="854.79" y="127.5" ></text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form11_cell_integral (4,185 samples, 0.01%)</title><rect x="537.2" y="133" width="0.1" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="540.20" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (25,365 samples, 0.07%)</title><rect x="830.9" y="101" width="0.8" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="833.88" y="111.5" ></text>
+</g>
+<g >
+<title>firedrake.dmhooks.set_function_space (53,036 samples, 0.15%)</title><rect x="300.4" y="197" width="1.7" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="303.37" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.cofunction.Cofunction.sub (5,007 samples, 0.01%)</title><rect x="561.7" y="149" width="0.2" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="564.72" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspaceimpl.FunctionSpace.__init__ (126,564 samples, 0.35%)</title><rect x="449.1" y="149" width="4.1" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="452.08" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.utility_meshes.RectangleMesh (103,394 samples, 0.29%)</title><rect x="1186.6" y="213" width="3.4" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="1189.59" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (35,224 samples, 0.10%)</title><rect x="836.2" y="101" width="1.1" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="839.19" y="111.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.form.AllAtOnceForm.copy (1,644,863 samples, 4.60%)</title><rect x="382.6" y="229" width="54.2" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="385.55" y="239.5" >asQ.a..</text>
+</g>
+<g >
+<title>VecCopy (18,047 samples, 0.05%)</title><rect x="514.6" y="165" width="0.6" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="517.56" y="175.5" ></text>
+</g>
+<g >
+<title>asQ.allatonce.form.AllAtOnceForm.__init__ (651,183 samples, 1.82%)</title><rect x="382.6" y="213" width="21.4" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="385.56" y="223.5" >a..</text>
+</g>
+<g >
+<title>Parloop_Cells_wrap_form19_cell_integral (60,225 samples, 0.17%)</title><rect x="823.6" y="149" width="2.0" height="15.0" fill="rgb(225,96,23)" rx="2" ry="2" />
+<text  x="826.60" y="159.5" ></text>
+</g>
+<g >
+<title>Parloop_set_#x7f06a76f5370_wrap_iop_iadd (52,332 samples, 0.15%)</title><rect x="504.0" y="149" width="1.7" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="506.96" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.variational_solver.LinearVariationalProblem.__init__ (51,347 samples, 0.14%)</title><rect x="1009.2" y="197" width="1.7" height="15.0" fill="rgb(233,133,31)" rx="2" ry="2" />
+<text  x="1012.24" y="207.5" ></text>
+</g>
+<g >
+<title>Mesh Migration (112,361 samples, 0.31%)</title><rect x="1181.9" y="197" width="3.7" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="1184.94" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspace.MixedFunctionSpace (407,717 samples, 1.14%)</title><rect x="439.8" y="165" width="13.4" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="442.81" y="175.5" ></text>
+</g>
+<g >
+<title>DMPlexDistOvrlp (146,352 samples, 0.41%)</title><rect x="1180.9" y="213" width="4.8" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="1183.92" y="223.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (44,882 samples, 0.13%)</title><rect x="818.5" y="117" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="821.52" y="127.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (3,433 samples, 0.01%)</title><rect x="1058.0" y="197" width="0.1" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1060.95" y="207.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.get_shared_data (56,358 samples, 0.16%)</title><rect x="451.4" y="133" width="1.8" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="454.39" y="143.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (16,322 samples, 0.05%)</title><rect x="773.4" y="37" width="0.6" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="776.43" y="47.5" ></text>
+</g>
+<g >
+<title>VecNorm (39,921 samples, 0.11%)</title><rect x="664.1" y="197" width="1.3" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="667.11" y="207.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (28,932 samples, 0.08%)</title><rect x="830.8" y="133" width="0.9" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="833.76" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (31,660 samples, 0.09%)</title><rect x="791.8" y="101" width="1.1" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="794.84" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (9,240 samples, 0.03%)</title><rect x="835.5" y="101" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="838.51" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (46,784 samples, 0.13%)</title><rect x="834.3" y="133" width="1.5" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="837.27" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (6,176 samples, 0.02%)</title><rect x="537.8" y="117" width="0.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="540.83" y="127.5" ></text>
+</g>
+<g >
+<title>firedrake.functionspacedata.FunctionSpaceData.__init__ (173,814 samples, 0.49%)</title><rect x="430.9" y="117" width="5.8" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="433.94" y="127.5" ></text>
+</g>
+<g >
+<title>pyop2.compilation.load (44,651 samples, 0.12%)</title><rect x="853.9" y="101" width="1.5" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="856.93" y="111.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (36,516 samples, 0.10%)</title><rect x="838.9" y="133" width="1.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="841.89" y="143.5" ></text>
+</g>
+<g >
+<title>KSPSolve (9,868 samples, 0.03%)</title><rect x="1028.5" y="133" width="0.4" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1031.55" y="143.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (129,103 samples, 0.36%)</title><rect x="980.5" y="181" width="4.2" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="983.45" y="191.5" ></text>
+</g>
+<g >
+<title>SFSetUp (11,617 samples, 0.03%)</title><rect x="645.9" y="149" width="0.3" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="648.86" y="159.5" ></text>
+</g>
+<g >
+<title>VecAXPY (12,486 samples, 0.03%)</title><rect x="882.7" y="213" width="0.4" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="885.70" y="223.5" ></text>
+</g>
+<g >
+<title>FunctionSpaceData: CreateElement (123,393 samples, 0.34%)</title><rect x="1164.6" y="149" width="4.1" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="1167.63" y="159.5" ></text>
+</g>
+<g >
+<title>firedrake.utility_meshes.UnitSquareMesh (103,523 samples, 0.29%)</title><rect x="1186.6" y="245" width="3.4" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="1189.59" y="255.5" ></text>
+</g>
+<g >
+<title>pyop2: cache wrapper (10,714 samples, 0.03%)</title><rect x="817.9" y="101" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="820.89" y="111.5" ></text>
+</g>
+</g>
+</svg>

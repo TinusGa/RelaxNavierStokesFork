@@ -10,13 +10,13 @@ from time import time
 #Problem parameters used if running this script
 class parameters:
     def __init__(self):
-        self.N = 50
+        self.N = 9
         self.dt = 0.001 #Specified instead of end time
-        self.M = 20
-        self.Mbase = 5
+        self.M = 9
+        self.Mbase = 4
         self.Mref = 2
         self.degree = {'space': 1,
-                       'time': 0} # DG degree 0 gives backward Euler
+                       'time': 3} # DG degree 0 gives backward Euler
         self.plot = True
         self.solver = None
 

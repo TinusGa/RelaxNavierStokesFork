@@ -25,11 +25,11 @@ import matplotlib.pyplot as plt
 
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
-    "Number of temporal processors": 8, # Optimal choice is the root of the number of time steps
-    "Number of time steps": 257, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
+    "Number of temporal processors": 4, # Optimal choice is the root of the number of time steps
+    "Number of time steps": 129, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
     "dt": 0.001,
-    "nx": 49, # Some choices of nx & ny lead to an uneven mesh distribution across ensemble ranks and causes the program to crash. Very strange
-    "ny": 49, 
+    "nx": 9, # Some choices of nx & ny lead to an uneven mesh distribution across ensemble ranks and causes the program to crash. Very strange
+    "ny": 9, 
     "degree_space": 1,
     "theta": 1,
 }
@@ -81,15 +81,26 @@ aaoform = AllAtOnceForm(aaofunc,
                         bcs=bcs)
 
 # asQ solver parameters
+# solver_parameters = {
+#     'snes_type': 'ksponly',
+#     'mat_type': 'matfree',
+#     'ksp_type': 'preonly',
+#     'ksp_monitor': None,
+#     'ksp_converged_rate': None,
+#     'pc_type': 'python',
+#     'pc_python_type': 'CyclicReduction.CyclicReductionPC',
+#     'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
+# }
+
 solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'matfree',
-    'ksp_type': 'preonly',
+    'ksp_type': 'richardson',  # Use an iterative outer KSP
+    'ksp_max_it': 50,
     'ksp_monitor': None,
     'ksp_converged_rate': None,
     'pc_type': 'python',
-    'pc_python_type': 'CyclicReduction.CyclicReductionPC',
-    'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
+    'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC',
 }
 
 # solver_parameters = {
