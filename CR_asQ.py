@@ -2,6 +2,9 @@ import faulthandler; faulthandler.enable()
 import numpy as np
 import os
 
+from mpi4py import MPI
+MPI.COMM_WORLD.Set_errhandler(MPI.ERRORS_RETURN)
+
 from firedrake import *
 import firedrake as fd
 from firedrake.output import VTKFile
@@ -25,11 +28,11 @@ import matplotlib.pyplot as plt
 
 problem_parameters = {
     "Number of time windows": 1, # No functionality for this yet
-    "Number of temporal processors": 4, # Optimal choice is the root of the number of time steps
+    "Number of temporal processors": 8, # Optimal choice is the root of the number of time steps
     "Number of time steps": 129, # Number of time steps must fit into a list following [2^k+1, 2^k, ..., 2^k] where k is an integer and the list length is equal to the number of temporal processors.
-    "dt": 0.001,
-    "nx": 9, # Some choices of nx & ny lead to an uneven mesh distribution across ensemble ranks and causes the program to crash. Very strange
-    "ny": 9, 
+    "dt": 0.00001,
+    "nx": 49, # Some choices of nx & ny lead to an uneven mesh distribution across ensemble ranks and causes the program to crash. Very strange
+    "ny": 49, 
     "degree_space": 1,
     "theta": 1,
 }
@@ -45,7 +48,7 @@ theta = problem_parameters['theta']
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(n_timesteps-1, temporal_processors)
-# time_partition = [64,64,64,64]
+# time_partition = [8,8,8,8]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Create a mesh with nx+1 and ny+1 vertices
@@ -59,6 +62,9 @@ x, y = SpatialCoordinate(V.mesh())
 u0 = Function(V)
 # u0.project(cos(pi*x)*cos(2*pi*y))
 # bcs = []
+
+# PETSc.Sys.Print(f"Rank {COMM_WORLD.rank} ensemble {ensemble.ensemble_comm.rank}: V.dof_count = {V.dof_count}, u0.local_size = {u0.dat._vec.getLocalSize()}", comm=fd.COMM_SELF)
+
 
 bcs = [DirichletBC(V, 0, sub_domain=1)]
 
@@ -92,28 +98,28 @@ aaoform = AllAtOnceForm(aaofunc,
 #     'cyclic_reduction_pc_factor_mat_solver_type': 'mumps',
 # }
 
-solver_parameters = {
-    'snes_type': 'ksponly',
-    'mat_type': 'matfree',
-    'ksp_type': 'richardson',  # Use an iterative outer KSP
-    'ksp_max_it': 50,
-    'ksp_monitor': None,
-    'ksp_converged_rate': None,
-    'pc_type': 'python',
-    'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC',
-}
-
 # solver_parameters = {
-# 'snes_type': 'ksponly',
-# 'mat_type': 'matfree',
-# 'ksp_type': 'richardson',
-# 'ksp_rtol': 1e-12,
-# 'ksp_monitor': None,
-# 'ksp_converged_rate': None,
-# 'pc_type': 'python',
-# 'pc_python_type': 'asQ.CirculantPC',
-# 'circulant_block': {'pc_type': 'lu'},
-# 'circulant_alpha': 1e-4}
+#     'snes_type': 'ksponly',
+#     'mat_type': 'matfree',
+#     'ksp_type': 'richardson',  # Use an iterative outer KSP
+#     'ksp_max_it': 50,
+#     'ksp_monitor': None,
+#     'ksp_converged_rate': None,
+#     'pc_type': 'python',
+#     'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC',
+# }
+
+solver_parameters = {
+'snes_type': 'ksponly',
+'mat_type': 'matfree',
+'ksp_type': 'richardson',
+'ksp_rtol': 1e-12,
+'ksp_monitor': None,
+'ksp_converged_rate': None,
+'pc_type': 'python',
+'pc_python_type': 'asQ.CirculantPC',
+'circulant_block': {'pc_type': 'lu'},
+'circulant_alpha': 1e-4}
 
 # solver_parameters = {
 # 'snes_type': 'ksponly',

@@ -9,6 +9,8 @@ from asQ.preconditioners.base import AllAtOnceBlockPCBase
 from asQ.parallel_arrays import SharedArray
 from asQ.allatonce import time_average
 
+from time import time
+
 
 __all__ = ['CyclicReductionPC','ApproxCyclicReductionPC']
 
@@ -413,9 +415,11 @@ class ApproxCyclicReductionPC(CyclicReductionPC):
         # ---------------------------------------------------------------------------
         # FORWARD REDUCTION
         # ---------------------------------------------------------------------------
+        # start = time()
         L, D, f = self.approx_forward_reduction(self.lower_diag_matrices,
                                          self.diag_matrices,
                                          self.rhs) 
+        # PETSc.Sys.Print(f"Time taken for approx_forward_reduction: {time() - start} seconds")
 
         # ---------------------------------------------------------------------------
         # INTERFACE SOLVE (processor communication)
@@ -445,7 +449,7 @@ class ApproxCyclicReductionPC(CyclicReductionPC):
         rhs.scale(-1.0) # rhs <- f - L * u_prev
 
         u_next = rhs.duplicate()
-        F = self.get_factored_matrix(D.copy(), self.ensemble.comm)
+        F = self.get_factored_matrix(D, self.ensemble.comm)
         F.solve(rhs, u_next)
 
         # Send to next temporal rank
@@ -463,7 +467,9 @@ class ApproxCyclicReductionPC(CyclicReductionPC):
         # ---------------------------------------------------------------------------
         # BACKSUBSTITUTION (also writes to the global solution vector y)
         # ---------------------------------------------------------------------------
+        # start = time()
         self.forward_substitution(self.lower_diag_matrices, self.diag_matrices, self.rhs, u_prev, y)
+        # PETSc.Sys.Print(f"Time taken for forward_substitution: {time() - start} seconds")
     
     def approx_forward_reduction(self, lower_diag, main_diag, rhs):
         """
@@ -530,3 +536,40 @@ class ApproxCyclicReductionPC(CyclicReductionPC):
         L = fd.assemble(-1*factor*self.dt1*M, bcs=self.block_bcs).petscmat
 
         return L, D, f
+    
+    def forward_substitution(self, lower_diag, main_diag, rhs, u_prev, y):
+        """
+        Perform the back substitution step of the cyclic reduction algorithm.
+        """
+        offset = 1 if self.temporal_rank == 0 else 0 # Since temporal rank 0 is offset from other ranks by 1. It has 1 more row than other ranks
+        L, D = lower_diag[0].copy(), main_diag[0].copy()
+        F = self.get_factored_matrix(D, self.ensemble.comm)
+
+        for i in range(offset, self.nlocal_timesteps):
+
+            # L = lower_diag[i].copy()
+            # D = main_diag[i].copy()
+            f = rhs[i].copy()
+
+            # Solve: u_next = D^{-1} (f - L * u_prev)
+            tmp = f.duplicate()
+            f.scale(-1.0) # Set f <- -f
+            L.multAdd(u_prev, f, tmp)  # rhs_tmp <- L * u_prev - f
+            tmp.scale(-1.0) # rhs_tmp <- f - L * u_prev
+            # F = self.get_factored_matrix(D, self.ensemble.comm)
+            u_next = tmp.duplicate()
+            F.solve(tmp, u_next)
+
+            self.a0[i,:] = u_next.getArray()[:]
+            with y.global_vec_wo() as yvec:
+                yvec.array[:] = self.a0.reshape(-1)[:]
+            
+            u_prev = u_next.copy()
+
+            # Destruction
+            # L.destroy()
+            # D.destroy()
+            f.destroy()
+            tmp.destroy()
+            # F.destroy()
+            u_next.destroy()

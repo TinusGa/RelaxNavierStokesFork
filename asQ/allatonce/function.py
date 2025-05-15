@@ -213,10 +213,11 @@ class AllAtOnceFunctionBase(TimePartitionMixin):
         else:
             sendrecv = self.ensemble.isendrecv
 
-        sendvec = self.unext.dat._vec
-        recvvec = self.uprev.dat._vec
+        # sendvec = self.unext.dat._vec
+        # recvvec = self.uprev.dat._vec
 
-        # PETSc.Sys.Print(f"Rank {rank} sending to {dst} and receiving from {src}. Size unext {sendvec.getLocalSize()} uprev {recvvec.getLocalSize()}", comm = fd.COMM_SELF)
+        # PETSc.Sys.Print(f"Global {fd.COMM_WORLD.rank}. Rank {rank} sending to {dst} and receiving from {src}. Size unext {sendvec.getLocalSize()} uprev {recvvec.getLocalSize()}", comm = fd.COMM_SELF)
+        # assert sendvec.getLocalSize() == recvvec.getLocalSize(), f"Send and receive vectors must be the same size but got {sendvec.getLocalSize()} and {recvvec.getLocalSize()}"
 
         return sendrecv(fsend=self.unext, dest=dst, sendtag=rank,
                         frecv=self.uprev, source=src, recvtag=src)
