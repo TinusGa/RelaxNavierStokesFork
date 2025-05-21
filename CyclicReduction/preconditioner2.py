@@ -60,92 +60,92 @@ __all__ = ['CyclicReductionPC2']
 #         pass
 
 
-# def order_points(mesh_dm, points, ordering_type, prefix):
-#     '''Order the points (topological entities) of a patch based
-#     on the adjacency graph of the mesh.
+def order_points(mesh_dm, points, ordering_type, prefix):
+    '''Order the points (topological entities) of a patch based
+    on the adjacency graph of the mesh.
 
-#     :arg mesh_dm: the `mesh.topology_dm`
-#     :arg points: array with point indices forming the patch
-#     :arg ordering_type: a `PETSc.Mat.OrderingType`
-#     :arg prefix: the prefix associated with additional ordering options
+    :arg mesh_dm: the `mesh.topology_dm`
+    :arg points: array with point indices forming the patch
+    :arg ordering_type: a `PETSc.Mat.OrderingType`
+    :arg prefix: the prefix associated with additional ordering options
 
-#     :returns: the permuted array of points
-#     '''
-#     # Order points by decreasing topological dimension (interiors, faces, edges, vertices)
-#     points = points[::-1]
-#     if ordering_type == "natural":
-#         return points
-#     subgraph = [np.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
-#     ia = np.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
-#     ja = np.concatenate(subgraph).astype(PETSc.IntType)
-#     A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, np.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
-#     A.setOptionsPrefix(prefix)
-#     rperm, cperm = A.getOrdering(ordering_type)
-#     indices = points[rperm.getIndices()]
-#     A.destroy()
-#     rperm.destroy()
-#     cperm.destroy()
-#     return indices
+    :returns: the permuted array of points
+    '''
+    # Order points by decreasing topological dimension (interiors, faces, edges, vertices)
+    points = points[::-1]
+    if ordering_type == "natural":
+        return points
+    subgraph = [np.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
+    ia = np.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
+    ja = np.concatenate(subgraph).astype(PETSc.IntType)
+    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, np.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
+    A.setOptionsPrefix(prefix)
+    rperm, cperm = A.getOrdering(ordering_type)
+    indices = points[rperm.getIndices()]
+    A.destroy()
+    rperm.destroy()
+    cperm.destroy()
+    return indices
 
-# class ASMStarPC(ASMPatchPC):
-#     '''Patch-based PC using Star of mesh entities implmented as an
-#     :class:`ASMPatchPC`.
+class ASMStarPC(ASMPatchPC):
+    '''Patch-based PC using Star of mesh entities implmented as an
+    :class:`ASMPatchPC`.
 
-#     ASMStarPC is an additive Schwarz preconditioner where each patch
-#     consists of all DoFs on the topological star of the mesh entity
-#     specified by `pc_star_construct_dim`.
-#     '''
+    ASMStarPC is an additive Schwarz preconditioner where each patch
+    consists of all DoFs on the topological star of the mesh entity
+    specified by `pc_star_construct_dim`.
+    '''
 
-#     _prefix = "pc_star_"
+    _prefix = "pc_star_"
 
-#     def get_patches(self, V):
-#         # PETSc.Sys.Print(f"ASMStarPC: get_patches, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
-#         mesh = V._mesh
-#         mesh_dm = mesh.topology_dm
-#         if mesh.cell_set._extruded:
-#             warning("applying ASMStarPC on an extruded mesh")
+    def get_patches(self, V):
+        # PETSc.Sys.Print(f"ASMStarPC: get_patches, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
+        mesh = V._mesh
+        mesh_dm = mesh.topology_dm
+        if mesh.cell_set._extruded:
+            warning("applying ASMStarPC on an extruded mesh")
 
-#         # Obtain the topological entities to use to construct the stars
-#         opts = PETSc.Options(self.prefix)
-#         depth = opts.getInt("construct_dim", default=0)
-#         ordering = opts.getString("mat_ordering_type", default="natural")
-#         # Accessing .indices causes the allocation of a global array,
-#         # so we need to cache these for efficiency
-#         V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
+        # Obtain the topological entities to use to construct the stars
+        opts = PETSc.Options(self.prefix)
+        depth = opts.getInt("construct_dim", default=0)
+        ordering = opts.getString("mat_ordering_type", default="natural")
+        # Accessing .indices causes the allocation of a global array,
+        # so we need to cache these for efficiency
+        V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
 
-#         # Build index sets for the patches
-#         ises = []
-#         (start, end) = mesh_dm.getDepthStratum(depth)
-#         for seed in range(start, end):
-#             # Only build patches over owned DoFs
-#             if mesh_dm.getLabelValue("pyop2_ghost", seed) != -1:
-#                 continue
+        # Build index sets for the patches
+        ises = []
+        (start, end) = mesh_dm.getDepthStratum(depth)
+        for seed in range(start, end):
+            # Only build patches over owned DoFs
+            if mesh_dm.getLabelValue("pyop2_ghost", seed) != -1:
+                continue
 
-#             # Create point list from mesh DM
-#             pt_array, _ = mesh_dm.getTransitiveClosure(seed, useCone=False)
-#             pt_array = order_points(mesh_dm, pt_array, ordering, self.prefix)
+            # Create point list from mesh DM
+            pt_array, _ = mesh_dm.getTransitiveClosure(seed, useCone=False)
+            pt_array = order_points(mesh_dm, pt_array, ordering, self.prefix)
 
-#             # Get DoF indices for patch
-#             indices = []
-#             for (i, W) in enumerate(V):
-#                 section = W.dm.getDefaultSection()
-#                 for p in pt_array.tolist():
-#                     dof = section.getDof(p)
-#                     if dof <= 0:
-#                         continue
-#                     off = section.getOffset(p)
-#                     # Local indices within W
-#                     W_indices = slice(off*W.block_size, W.block_size * (off + dof))
-#                     indices.extend(V_local_ises_indices[i][W_indices])
-#             iset = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-#             ises.append(iset)
-#         return ises
+            # Get DoF indices for patch
+            indices = []
+            for (i, W) in enumerate(V):
+                section = W.dm.getDefaultSection()
+                for p in pt_array.tolist():
+                    dof = section.getDof(p)
+                    if dof <= 0:
+                        continue
+                    off = section.getOffset(p)
+                    # Local indices within W
+                    W_indices = slice(off*W.block_size, W.block_size * (off + dof))
+                    indices.extend(V_local_ises_indices[i][W_indices])
+            iset = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            ises.append(iset)
+        return ises
 
 
 
 class CyclicReductionPC2(PCBase):
 
-    _prefix = '_CR2'
+    _prefix = 'pc_opts_'
 
     def initialize(self,pc):
         _, self.A = pc.getOperators() # <class 'petsc4py.PETSc.Mat'>
@@ -158,6 +158,8 @@ class CyclicReductionPC2(PCBase):
 
         self.star_pc = ASMStarPC()
         self.star_pc.initialize(pc)
+        self.prefix = pc.getOptionsPrefix() + self._prefix
+        self.star_pc.prefix = self.prefix
 
         self.patches = self.star_pc.get_patches(V)
         self.submatrices = []
@@ -180,6 +182,7 @@ class CyclicReductionPC2(PCBase):
                 submat.setValues([i_local], range(n), row[0])  # insert into local mat
             submat.assemble()
             self.submatrices.append(submat)
+        PETSc.Sys.Print(f"num patches: {len(self.patches)}, size first patch: {len(self.patches[0].getIndices())}")
 
     def update(self, pc):
         pass

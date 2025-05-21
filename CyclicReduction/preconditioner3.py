@@ -1,20 +1,103 @@
 import numpy as np
+from time import time
 
 import firedrake as fd
 from firedrake.petsc import PETSc
+from firedrake.preconditioners import ASMPatchPC
+from firedrake.logging import warning
+from firedrake.dmhooks import get_function_space
+
 
 from asQ.pencil import Pencil, Subcomm
 from asQ.profiling import profiler
 from asQ.preconditioners.base import AllAtOnceBlockPCBase
 from asQ.parallel_arrays import SharedArray
-from asQ.allatonce import time_average
-
-from time import time
 
 
-__all__ = ['CyclicReductionPC','ApproxCyclicReductionPC']
+__all__ = ['CyclicReductionPC3','ApproxCyclicReductionPC3']
 
-class CyclicReductionPC(AllAtOnceBlockPCBase):
+def order_points(mesh_dm, points, ordering_type, prefix):
+    '''Order the points (topological entities) of a patch based
+    on the adjacency graph of the mesh.
+
+    :arg mesh_dm: the `mesh.topology_dm`
+    :arg points: array with point indices forming the patch
+    :arg ordering_type: a `PETSc.Mat.OrderingType`
+    :arg prefix: the prefix associated with additional ordering options
+
+    :returns: the permuted array of points
+    '''
+    # Order points by decreasing topological dimension (interiors, faces, edges, vertices)
+    points = points[::-1]
+    if ordering_type == "natural":
+        return points
+    subgraph = [np.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
+    ia = np.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
+    ja = np.concatenate(subgraph).astype(PETSc.IntType)
+    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, np.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
+    A.setOptionsPrefix(prefix)
+    rperm, cperm = A.getOrdering(ordering_type)
+    indices = points[rperm.getIndices()]
+    A.destroy()
+    rperm.destroy()
+    cperm.destroy()
+    return indices
+
+class ASMStarPC(ASMPatchPC):
+    '''Patch-based PC using Star of mesh entities implmented as an
+    :class:`ASMPatchPC`.
+
+    ASMStarPC is an additive Schwarz preconditioner where each patch
+    consists of all DoFs on the topological star of the mesh entity
+    specified by `pc_star_construct_dim`.
+    '''
+
+    _prefix = "pc_star_"
+
+    def get_patches(self, V):
+        # PETSc.Sys.Print(f"ASMStarPC: get_patches, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
+        mesh = V._mesh
+        mesh_dm = mesh.topology_dm
+        if mesh.cell_set._extruded:
+            warning("applying ASMStarPC on an extruded mesh")
+
+        # Obtain the topological entities to use to construct the stars
+        opts = PETSc.Options(self.prefix)
+        depth = opts.getInt("construct_dim", default=0)
+        ordering = opts.getString("mat_ordering_type", default="natural")
+        # Accessing .indices causes the allocation of a global array,
+        # so we need to cache these for efficiency
+        V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
+
+        # Build index sets for the patches
+        ises = []
+        (start, end) = mesh_dm.getDepthStratum(depth)
+        for seed in range(start, end):
+            # Only build patches over owned DoFs
+            if mesh_dm.getLabelValue("pyop2_ghost", seed) != -1:
+                continue
+
+            # Create point list from mesh DM
+            pt_array, _ = mesh_dm.getTransitiveClosure(seed, useCone=False)
+            pt_array = order_points(mesh_dm, pt_array, ordering, self.prefix)
+
+            # Get DoF indices for patch
+            indices = []
+            for (i, W) in enumerate(V):
+                section = W.dm.getDefaultSection()
+                for p in pt_array.tolist():
+                    dof = section.getDof(p)
+                    if dof <= 0:
+                        continue
+                    off = section.getOffset(p)
+                    # Local indices within W
+                    W_indices = slice(off*W.block_size, W.block_size * (off + dof))
+                    indices.extend(V_local_ises_indices[i][W_indices])
+            iset = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            ises.append(iset)
+        return ises
+
+class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
     prefix = 'cyclic_reduction_'
     valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
@@ -27,7 +110,13 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         # All-at-once reference state
         self.state_func = self.aaofunc.copy()
-        self.field_function_space = self.aaofunc.field_function_space
+        self.field_function_space = self.aaofunc.field_function_space # This is currently not compatible with how MG is set up
+
+        # Get the DM and the function space
+        dm = pc.getDM()
+        # V = get_function_space(dm) # This doesn't work and throws a segmentation violation error.
+
+        # TODO: Find a way to make field_function_space and the underlying function space from the DM work in the MG context
 
         # This processor's spatial and temporal rank
         self.spatial_rank = self.ensemble.comm.rank
@@ -39,7 +128,19 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
                            0*bc.function_arg,
                            bc.sub_domain)
             for bc in self.aaoform.field_bcs)
-                
+        
+        # Initialize the desired patch PC. There's probably a better way to do this, but this works for now
+        self.star_pc = ASMStarPC()
+        self.star_pc.prefix = 'star'
+        self.patches = self.star_pc.get_patches(self.field_function_space) 
+        # TODO: This should extract patches for all timesteps owned on this temporal rank. Should correspond to an LBD system
+
+        # len(self.patches)*self.nlocal_timesteps = this ranks owned dofs of the global matrix
+        PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}, time/space {self.temporal_rank,self.spatial_rank}: len patches {len(self.patches)}, len indices patches 0 {len(self.patches[0].indices)}",comm=fd.COMM_SELF)
+        
+        # TODO: Construct the appropriate LBD system for this rank based on the patches which will be used in apply()
+        
+        # We can either use lists or perhaps a nested matrix to store the LBD systems
         self.diag_matrices = []
         self.lower_diag_matrices = []
         self.rhs = []
@@ -86,6 +187,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
+        PETSc.Sys.Print(f"Apply called: y.size = {y._vec.getSize()}",comm=fd.COMM_SELF) # Clearly no MG here
 
         y.zero()
         
@@ -367,7 +469,7 @@ class CyclicReductionPC(AllAtOnceBlockPCBase):
 
         return index_list
 
-class ApproxCyclicReductionPC(CyclicReductionPC):
+class ApproxCyclicReductionPC3(CyclicReductionPC3):
     """
     Approximate cyclic reduction preconditioner.
     

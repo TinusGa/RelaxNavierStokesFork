@@ -25,11 +25,11 @@ class ProblemParameters:
     def __init__(self):
         self.N = 9 # Number of time steps
         self.dt = 0.001 #Specified instead of end time
-        self.M = 9 # Number of spatial points
-        self.Mbase = 4 # Number of spatial points in base mesh
+        self.M = 10 # Number of spatial points
+        self.Mbase = 3 # Number of spatial points in base mesh
         self.Mref = 2 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 1,
-                       'time': 3} # DG degree 0 gives backward Euler
+                       'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
         self.Pt = 1 # Processors in time
@@ -88,6 +88,10 @@ solver_parameters = {'snes_type': 'ksponly',
                     "mg_levels_ksp_convergence_test": "skip",
                     "mg_levels_pc_type": "python",
                     "mg_levels_pc_python_type": "CyclicReduction.CyclicReductionPC2", # Contains firedrake.ASMStarPC
+                    "mg_levels_pc_opts": {"patch_type": "star",
+                                          "construct_dim": 0,
+                                          "mat_ordering_type": "natural",
+                                          },
                     "mg_coarse_pc_type": "python",
                     "mg_coarse_pc_python_type": "firedrake.AssembledPC", # Could also use CR here?
                     "mg_coarse_assembled_pc_type": "lu",
@@ -95,7 +99,7 @@ solver_parameters = {'snes_type': 'ksponly',
                     }
 
 AllAtOnce = False
-Extruded = True
+Extruded = False
 
 if AllAtOnce:
     aaofunc = AllAtOnceFunction(ensemble, time_partition, U)
@@ -107,6 +111,7 @@ if AllAtOnce:
                             form_mass,
                             form_function, 
                             bcs=bcs)
+    
     solver = AllAtOnceSolver(aaoform, 
                             aaofunc, 
                             solver_parameters)
