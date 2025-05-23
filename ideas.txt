@@ -3,13 +3,20 @@ mesh_hierarchy <-
 
 
 solver_parameters = {'snes_type': 'ksponly',
-                    'mat_type': 'aij',
-                    'ksp_type': 'fgmres',
-                    "ksp_monitor_true_residual": None,
-                    "ksp_max_it": 100,
-                    "ksp_gmres_restart": 100,
-                    "ksp_atol": 1e-6,
-                    "ksp_rtol": 1e-6,
+                     'mat_type': 'aij',
+                     'ksp_type': 'fgmres',
+                     'ksp_monitor_true_residual': None,
+                     'ksp_max_it': 100,
+                     'ksp_gmres_restart': 100,
+                     'ksp_atol': 1e-6,
+                     'ksp_rtol': 1e-6,
+                     'pc_type': asQ_type_MG_PC,
+                     'pc_asQ_type_MG_PC_opts': relevant_custom_MG_options like relaxation ksp, ksp max it, coarse solver etc.,
+                     'pc_asQ_type_MG_PC_sub_PC': asQ_type_CR/MGR_PC,
+                     'pc_asQ_type_MG_PC_sub_PC_opts': ASMPatch options for example, 
+                    }
+
+
                     'pc_type': 'mg',
                     "pc_mg_type": "multiplicative",
                     "pc_mg_cycles": "v",

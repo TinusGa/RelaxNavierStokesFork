@@ -5,16 +5,21 @@ import firedrake as fd
 from firedrake.petsc import PETSc
 from firedrake.preconditioners import ASMPatchPC
 from firedrake.logging import warning
-from firedrake.dmhooks import get_function_space
-
 
 from asQ.pencil import Pencil, Subcomm
 from asQ.profiling import profiler
 from asQ.preconditioners.base import AllAtOnceBlockPCBase
 from asQ.parallel_arrays import SharedArray
+from asQ.allatonce import LinearSolver
+
+from asQ import (
+    AllAtOnceFunction,
+    AllAtOnceForm,
+    AllAtOnceSolver,
+)
 
 
-__all__ = ['CyclicReductionPC3','ApproxCyclicReductionPC3']
+__all__ = ['CyclicReductionPC3','ApproxCyclicReductionPC3','asQMGPC']
 
 def order_points(mesh_dm, points, ordering_type, prefix):
     '''Order the points (topological entities) of a patch based
@@ -97,6 +102,75 @@ class ASMStarPC(ASMPatchPC):
             ises.append(iset)
         return ises
 
+class asQMGPC(AllAtOnceBlockPCBase):
+    prefix = 'sumting'
+    valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
+
+    def initialize(self, pc):
+        PETSc.Sys.Print(f"asQMGPC: initialize, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
+        pc.setOptionsPrefix('yoyo')
+        super().initialize(pc, final_initialize=False)
+
+        self.field_function_space = self.aaofunc.field_function_space
+        PETSc.Sys.Print(f"now field function space has dim {self.field_function_space.dim()}",comm = fd.COMM_WORLD)
+        self.function_space = self.aaofunc.function_space
+
+        self.mesh = self.field_function_space.mesh()
+        distribution_parameters={"partition": True, "overlap_type": (fd.DistributedMeshOverlapType.VERTEX, 2)}
+        self.base_mesh = fd.UnitSquareMesh(nx = self.mesh.topological_dimension()+1, 
+                                           ny = self.mesh.topological_dimension()+1,
+                                           distribution_parameters=distribution_parameters,
+                                           comm = self.ensemble.comm)
+        self.mesh_hierarchy = fd.MeshHierarchy(self.base_mesh, refinement_levels = 2)
+        
+        self.functionspaces = []
+        for mesh in self.mesh_hierarchy:
+            V = fd.FunctionSpace(mesh, "CG", 1)
+            self.functionspaces.append(V)
+        
+        if self.functionspaces[-1].dim() != self.field_function_space.dim():
+            raise ValueError(f"Function space dimension mismatch: {self.functionspaces[-1].dim()} != {self.field_function_space.dim()}")
+
+        self.tm = fd.TransferManager(use_averaging=False)
+        self.initialized = True
+
+    def _record_diagnostics(self):
+        pass
+    
+    def update(self, pc):
+        pass
+
+    def apply_impl(self, pc, x, y):
+        # Might need to move the v-cycle here
+        # No, we can solve in initialize and just pass the solution to the apply function
+        # y.assign(self.somesolution) for example
+
+        solver_parameters = {'ksp_type': 'chebyshev',
+                             'ksp_chebyshev_esteig': '0,0.25,0,1.05',
+                             'ksp_max_it': 2,
+                             'ksp_convergence_test': 'skip',
+                             'pc_type': 'python',
+                             'pc_python_type': 'CyclicReduction.CyclicReductionPC3', # Contains firedrake.ASMStarPC
+                             'pc_opts': {'patch_type': 'star',
+                                                   'construct_dim': 0,
+                                                   'mat_ordering_type': 'natural',
+                                                   },
+                            }
+
+        for V, mesh in zip(self.functionspaces, self.mesh_hierarchy):
+            allatoncefunction = AllAtOnceFunction(self.ensemble, self.time_partition, V)
+            allatonceform = AllAtOnceForm(allatoncefunction, 
+                                          self.dt, 
+                                          self.theta, 
+                                          self.form_mass, 
+                                          self.form_function, 
+                                          bcs=self.aaoform.field_bcs)
+            allatoncesolver = LinearSolver(allatonceform,solver_parameters=solver_parameters)
+            allatoncesolver.solve(allatonceform.F, allatoncefunction)
+        y.scale(0)
+        pass
+
+
 class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
     prefix = 'cyclic_reduction_'
@@ -113,7 +187,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         self.field_function_space = self.aaofunc.field_function_space # This is currently not compatible with how MG is set up
 
         # Get the DM and the function space
-        dm = pc.getDM()
+        dm = pc.getDM() # This returns a null pointer currently. Most likely because there is no DM set up for the MG context
         # V = get_function_space(dm) # This doesn't work and throws a segmentation violation error.
 
         # TODO: Find a way to make field_function_space and the underlying function space from the DM work in the MG context
