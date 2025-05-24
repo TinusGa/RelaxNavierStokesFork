@@ -22,7 +22,7 @@ class ProblemParameters:
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
-        self.Pt = 1 # Processors in time
+        self.Pt = 4 # Processors in time
         self.theta = 1 # Theta parameter for the time-stepping scheme
 
 parameters = ProblemParameters()
@@ -39,13 +39,18 @@ base_mesh = UnitSquareMesh(nx = parameters.Mbase, ny = parameters.Mbase,
 
 mesh_hierarchy = MeshHierarchy(base_mesh,parameters.Mref)
 
+
 mesh = mesh_hierarchy[-1] # This is the finest mesh
 
-# Define function space
-space_element = FiniteElement("CG", triangle, parameters.degree['space'])
-U = FunctionSpace(mesh,space_element)
+# Define function spaces
+function_spaces = []
+for mesh in mesh_hierarchy:
+    space_element = FiniteElement("CG", triangle, parameters.degree['space'])
+    U = FunctionSpace(mesh,space_element)
+    function_spaces.append(U)
 
 # Define initial condition
+U = function_spaces[-1] 
 x, y = SpatialCoordinate(U.mesh())
 
 u0 = Function(U)
@@ -97,8 +102,9 @@ solver_parameters = {'snes_type': 'ksponly',
                     }
 
 solver = AllAtOnceSolver(aaoform, 
-                        aaofunc, 
-                        solver_parameters)
+                         aaofunc, 
+                         solver_parameters,
+                         appctx={'mesh_hierarchy': mesh_hierarchy, 'function_spaces': function_spaces})
 
 # Some useful prints
 processes = COMM_WORLD.size

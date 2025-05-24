@@ -14,6 +14,7 @@ from asQ.allatonce import LinearSolver
 
 from asQ import (
     AllAtOnceFunction,
+    AllAtOnceCofunction,
     AllAtOnceForm,
     AllAtOnceSolver,
 )
@@ -107,31 +108,29 @@ class asQMGPC(AllAtOnceBlockPCBase):
     valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
 
     def initialize(self, pc):
-        PETSc.Sys.Print(f"asQMGPC: initialize, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
         pc.setOptionsPrefix('yoyo')
         super().initialize(pc, final_initialize=False)
 
         self.field_function_space = self.aaofunc.field_function_space
-        PETSc.Sys.Print(f"now field function space has dim {self.field_function_space.dim()}",comm = fd.COMM_WORLD)
         self.function_space = self.aaofunc.function_space
 
-        self.mesh = self.field_function_space.mesh()
-        distribution_parameters={"partition": True, "overlap_type": (fd.DistributedMeshOverlapType.VERTEX, 2)}
-        self.base_mesh = fd.UnitSquareMesh(nx = self.mesh.topological_dimension()+1, 
-                                           ny = self.mesh.topological_dimension()+1,
-                                           distribution_parameters=distribution_parameters,
-                                           comm = self.ensemble.comm)
-        self.mesh_hierarchy = fd.MeshHierarchy(self.base_mesh, refinement_levels = 2)
-        
-        self.functionspaces = []
-        for mesh in self.mesh_hierarchy:
-            V = fd.FunctionSpace(mesh, "CG", 1)
-            self.functionspaces.append(V)
-        
-        if self.functionspaces[-1].dim() != self.field_function_space.dim():
-            raise ValueError(f"Function space dimension mismatch: {self.functionspaces[-1].dim()} != {self.field_function_space.dim()}")
+        self.mesh_hierarchy = self.appctx.get('mesh_hierarchy')
+        self.function_spaces = self.appctx.get('function_spaces')
+
+        self.us = [] # List of solutions as AllAtOnceFunction's
+        self.rs = [] # List of residuals as AllAtOnceCofunction's
+        for V in self.function_spaces:
+            u = AllAtOnceFunction(self.ensemble, self.time_partition, V)
+            r = AllAtOnceCofunction(self.ensemble, self.time_partition, u.field_function_space.dual())
+            self.us.append(u)
+            self.rs.append(r)
+        # Reverse the order so that the finest mesh is first
+        self.us = list(reversed(self.us))
+        self.rs = list(reversed(self.rs))
+        self.function_spaces = list(reversed(self.function_spaces))
 
         self.tm = fd.TransferManager(use_averaging=False)
+
         self.initialized = True
 
     def _record_diagnostics(self):
@@ -144,6 +143,9 @@ class asQMGPC(AllAtOnceBlockPCBase):
         # Might need to move the v-cycle here
         # No, we can solve in initialize and just pass the solution to the apply function
         # y.assign(self.somesolution) for example
+        # x is the residual AllAtOnceCofunction
+        # y is the solution AllAtOnceFunction
+        # use these for the MG solve
 
         solver_parameters = {'ksp_type': 'chebyshev',
                              'ksp_chebyshev_esteig': '0,0.25,0,1.05',
@@ -157,18 +159,74 @@ class asQMGPC(AllAtOnceBlockPCBase):
                                                    },
                             }
 
-        for V, mesh in zip(self.functionspaces, self.mesh_hierarchy):
-            allatoncefunction = AllAtOnceFunction(self.ensemble, self.time_partition, V)
-            allatonceform = AllAtOnceForm(allatoncefunction, 
-                                          self.dt, 
-                                          self.theta, 
-                                          self.form_mass, 
-                                          self.form_function, 
+        u_fine = self.us[0]  
+        r_fine = self.rs[0]  
+
+        u_fine.assign(y)  
+        r_fine.assign(x) 
+
+        # Coarsening
+        for i in range(len(self.mesh_hierarchy) - 1):
+            u_coarse = self.us[i+1]  
+            r_coarse = self.rs[i+1]
+
+            allatonceform = AllAtOnceForm(u_fine, self.dt, self.theta, 
+                                          self.form_mass, self.form_function, 
                                           bcs=self.aaoform.field_bcs)
-            allatoncesolver = LinearSolver(allatonceform,solver_parameters=solver_parameters)
-            allatoncesolver.solve(allatonceform.F, allatoncefunction)
-        y.scale(0)
-        pass
+            
+            solver = LinearSolver(allatonceform, solver_parameters=solver_parameters, options_prefix='restrict_')
+            
+            solver.solve(r_fine, u_fine)
+            
+            # Transfer the residual to the next coarser mesh
+            for j in range(self.nlocal_timesteps):
+                self.tm.restrict(r_fine[j], r_coarse[j])
+            
+            # u_coarse and r_coarse will be the fine solution and residual in the next iteration
+            u_fine = u_coarse
+            r_fine = r_coarse
+        
+        # Coarsest solve
+        allatonceform = AllAtOnceForm(u_fine, self.dt, self.theta, 
+                                      self.form_mass, self.form_function, 
+                                      bcs=self.aaoform.field_bcs)
+            
+        solver = LinearSolver(allatonceform, solver_parameters=solver_parameters, options_prefix='coarsest_')
+        
+        solver.solve(r_fine, u_fine)
+
+        u_coarse = u_fine
+        r_coarse = r_fine
+
+        # Refine the solution back to the finest mesh
+        # First fine should be the second to last elements in the lists, and we want to loop backwards
+        for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
+            PETSc.Sys.Print(f"Prolonging from mesh {i+1} to mesh {i}")
+            u_coarse = self.us[i+1]
+            u_fine = self.us[i]  
+            r_fine = self.rs[i]  
+            correction = AllAtOnceFunction(self.ensemble, self.time_partition, self.function_spaces[i])
+
+            # PETSc.Sys.Print(f"u_coarse length = {u_coarse._vec.getSize()}, correction length = {correction._vec.getSize()}", comm=fd.COMM_SELF)
+
+            # Transfer the solution back to the finer mesh
+            for j in range(self.nlocal_timesteps):
+                self.tm.prolong(u_coarse[j], correction[j])
+            
+            u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
+            
+            # Post smoothing
+            allatonceform = AllAtOnceForm(u_fine, self.dt, self.theta, 
+                                          self.form_mass, self.form_function, 
+                                          bcs=self.aaoform.field_bcs)
+            
+            solver = LinearSolver(allatonceform, solver_parameters=solver_parameters, options_prefix='prolong_')
+            solver.solve(r_fine, u_fine)
+
+        
+        
+        y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
+        
 
 
 class CyclicReductionPC3(AllAtOnceBlockPCBase):
@@ -210,7 +268,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # TODO: This should extract patches for all timesteps owned on this temporal rank. Should correspond to an LBD system
 
         # len(self.patches)*self.nlocal_timesteps = this ranks owned dofs of the global matrix
-        PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}, time/space {self.temporal_rank,self.spatial_rank}: len patches {len(self.patches)}, len indices patches 0 {len(self.patches[0].indices)}",comm=fd.COMM_SELF)
+        # PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}, time/space {self.temporal_rank,self.spatial_rank}: len patches {len(self.patches)}, len indices patches 0 {len(self.patches[0].indices)}",comm=fd.COMM_SELF)
         
         # TODO: Construct the appropriate LBD system for this rank based on the patches which will be used in apply()
         
@@ -261,7 +319,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
-        PETSc.Sys.Print(f"Apply called: y.size = {y._vec.getSize()}",comm=fd.COMM_SELF) # Clearly no MG here
+        # PETSc.Sys.Print(f"Apply called: y.size = {y._vec.getSize()}",comm=fd.COMM_SELF) # Clearly no MG here
 
         y.zero()
         
