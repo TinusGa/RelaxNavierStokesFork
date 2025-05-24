@@ -44,19 +44,35 @@ mesh = mesh_hierarchy[-1] # This is the finest mesh
 
 # Define function spaces
 function_spaces = []
+bcs_list = []
 for mesh in mesh_hierarchy:
     space_element = FiniteElement("CG", triangle, parameters.degree['space'])
     U = FunctionSpace(mesh,space_element)
     function_spaces.append(U)
+
+    # BC 1
+    # bcs = []
+
+    # BC 2
+    bcs = [DirichletBC(U, 0, sub_domain=1)]
+    bcs_list.append(bcs)
+
 
 # Define initial condition
 U = function_spaces[-1] 
 x, y = SpatialCoordinate(U.mesh())
 
 u0 = Function(U)
-u0.project(cos(pi*x)*cos(2*pi*y))
 
-bcs = []
+# Two different IC's and BC's to test
+
+# IC to BC 1
+# u0.project(cos(pi*x)*cos(2*pi*y))
+
+# IC to BC 2
+u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+
+bcs = bcs_list[-1]
 
 def form_mass(u, v):
     return u*v*dx
@@ -104,7 +120,7 @@ solver_parameters = {'snes_type': 'ksponly',
 solver = AllAtOnceSolver(aaoform, 
                          aaofunc, 
                          solver_parameters,
-                         appctx={'mesh_hierarchy': mesh_hierarchy, 'function_spaces': function_spaces})
+                         appctx={'mesh_hierarchy': mesh_hierarchy, 'function_spaces': function_spaces, 'bcs_list': bcs_list})
 
 # Some useful prints
 processes = COMM_WORLD.size

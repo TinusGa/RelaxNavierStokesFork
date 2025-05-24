@@ -116,19 +116,52 @@ class asQMGPC(AllAtOnceBlockPCBase):
 
         self.mesh_hierarchy = self.appctx.get('mesh_hierarchy')
         self.function_spaces = self.appctx.get('function_spaces')
+        self.bcs_list = self.appctx.get('bcs_list')
 
         self.us = [] # List of solutions as AllAtOnceFunction's
         self.rs = [] # List of residuals as AllAtOnceCofunction's
-        for V in self.function_spaces:
+
+        self.forms = []
+        self.solvers = []
+        self.corrections = []
+
+        self.solver_parameters = {'ksp_type': 'chebyshev',
+                             'ksp_chebyshev_esteig': '0,0.25,0,1.05',
+                             'ksp_max_it': 2,
+                             'ksp_convergence_test': 'skip',
+                             'pc_type': 'python',
+                             'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC3', # Contains firedrake.ASMStarPC
+                             'pc_opts': {'patch_type': 'star',
+                                                   'construct_dim': 0,
+                                                   'mat_ordering_type': 'natural',
+                                                   },
+                            }
+
+        # Create AllAtOnce objects for each function space in the hierarchy
+        for V, bcs in zip(self.function_spaces,self.bcs_list):
             u = AllAtOnceFunction(self.ensemble, self.time_partition, V)
             r = AllAtOnceCofunction(self.ensemble, self.time_partition, u.field_function_space.dual())
+            form = AllAtOnceForm(u, self.dt, self.theta,
+                                 self.form_mass, self.form_function,
+                                 bcs=bcs)  # Use the first set of bcs for all meshes
+            solver = LinearSolver(form, solver_parameters=self.solver_parameters, options_prefix='custom_mg_')
+            
             self.us.append(u)
             self.rs.append(r)
-        # Reverse the order so that the finest mesh is first
+            self.forms.append(form)
+            self.solvers.append(solver)
+            self.corrections.append(u.copy())
+
+
+        # Reverse the order so that we get the finest mesh is first
+        self.function_spaces = list(reversed(self.function_spaces))
         self.us = list(reversed(self.us))
         self.rs = list(reversed(self.rs))
-        self.function_spaces = list(reversed(self.function_spaces))
+        self.forms = list(reversed(self.forms))
+        self.solvers = list(reversed(self.solvers))
+        self.corrections = list(reversed(self.corrections))
 
+        # Transfer manager for restriction and prolongation
         self.tm = fd.TransferManager(use_averaging=False)
 
         self.initialized = True
@@ -147,18 +180,6 @@ class asQMGPC(AllAtOnceBlockPCBase):
         # y is the solution AllAtOnceFunction
         # use these for the MG solve
 
-        solver_parameters = {'ksp_type': 'chebyshev',
-                             'ksp_chebyshev_esteig': '0,0.25,0,1.05',
-                             'ksp_max_it': 2,
-                             'ksp_convergence_test': 'skip',
-                             'pc_type': 'python',
-                             'pc_python_type': 'CyclicReduction.CyclicReductionPC3', # Contains firedrake.ASMStarPC
-                             'pc_opts': {'patch_type': 'star',
-                                                   'construct_dim': 0,
-                                                   'mat_ordering_type': 'natural',
-                                                   },
-                            }
-
         u_fine = self.us[0]  
         r_fine = self.rs[0]  
 
@@ -170,12 +191,7 @@ class asQMGPC(AllAtOnceBlockPCBase):
             u_coarse = self.us[i+1]  
             r_coarse = self.rs[i+1]
 
-            allatonceform = AllAtOnceForm(u_fine, self.dt, self.theta, 
-                                          self.form_mass, self.form_function, 
-                                          bcs=self.aaoform.field_bcs)
-            
-            solver = LinearSolver(allatonceform, solver_parameters=solver_parameters, options_prefix='restrict_')
-            
+            solver = self.solvers[i]     
             solver.solve(r_fine, u_fine)
             
             # Transfer the residual to the next coarser mesh
@@ -187,12 +203,7 @@ class asQMGPC(AllAtOnceBlockPCBase):
             r_fine = r_coarse
         
         # Coarsest solve
-        allatonceform = AllAtOnceForm(u_fine, self.dt, self.theta, 
-                                      self.form_mass, self.form_function, 
-                                      bcs=self.aaoform.field_bcs)
-            
-        solver = LinearSolver(allatonceform, solver_parameters=solver_parameters, options_prefix='coarsest_')
-        
+        solver = self.solvers[-1]
         solver.solve(r_fine, u_fine)
 
         u_coarse = u_fine
@@ -201,33 +212,22 @@ class asQMGPC(AllAtOnceBlockPCBase):
         # Refine the solution back to the finest mesh
         # First fine should be the second to last elements in the lists, and we want to loop backwards
         for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
-            PETSc.Sys.Print(f"Prolonging from mesh {i+1} to mesh {i}")
             u_coarse = self.us[i+1]
             u_fine = self.us[i]  
             r_fine = self.rs[i]  
-            correction = AllAtOnceFunction(self.ensemble, self.time_partition, self.function_spaces[i])
-
-            # PETSc.Sys.Print(f"u_coarse length = {u_coarse._vec.getSize()}, correction length = {correction._vec.getSize()}", comm=fd.COMM_SELF)
+            correction = self.corrections[i] 
 
             # Transfer the solution back to the finer mesh
             for j in range(self.nlocal_timesteps):
                 self.tm.prolong(u_coarse[j], correction[j])
             
             u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
-            
-            # Post smoothing
-            allatonceform = AllAtOnceForm(u_fine, self.dt, self.theta, 
-                                          self.form_mass, self.form_function, 
-                                          bcs=self.aaoform.field_bcs)
-            
-            solver = LinearSolver(allatonceform, solver_parameters=solver_parameters, options_prefix='prolong_')
+
+            solver = self.solvers[i]
             solver.solve(r_fine, u_fine)
 
-        
-        
         y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
         
-
 
 class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
