@@ -196,4 +196,5 @@ class AllAtOnceJacobian(TimePartitionMixin):
         mat.setSizes((sizes, sizes))
         mat.setPythonContext(self)
         mat.setUp()
+
         return mat

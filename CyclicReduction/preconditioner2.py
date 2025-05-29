@@ -102,8 +102,8 @@ class ASMStarPC(ASMPatchPC):
         # PETSc.Sys.Print(f"ASMStarPC: get_patches, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
         mesh = V._mesh
         mesh_dm = mesh.topology_dm
-        if mesh.cell_set._extruded:
-            warning("applying ASMStarPC on an extruded mesh")
+        # if mesh.cell_set._extruded:
+        #     warning("applying ASMStarPC on an extruded mesh")
 
         # Obtain the topological entities to use to construct the stars
         opts = PETSc.Options(self.prefix)
@@ -150,9 +150,9 @@ class CyclicReductionPC2(PCBase):
     def initialize(self,pc):
         _, self.A = pc.getOperators() # <class 'petsc4py.PETSc.Mat'>
         PETSc.Sys.Print(f"self.A.getOwnershipRanges(): {self.A.getOwnershipRanges()}")
-
         dm = pc.getDM()
         V = get_function_space(dm)
+        PETSc.Sys.Print(f"V.dim() : {V.dim()}")
 
         assert V is not None, "Function space V is None"
 
@@ -162,27 +162,29 @@ class CyclicReductionPC2(PCBase):
         self.star_pc.prefix = self.prefix
 
         self.patches = self.star_pc.get_patches(V)
-        self.submatrices = []
+        PETSc.Sys.Print(f"Rank : {fd.COMM_WORLD.rank}, num patches: {len(self.patches)}, length each patch : {len(self.patches[0].indices)}, first patch : {self.patches[0].indices}",comm=fd.COMM_SELF)
+        fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
+        # self.submatrices = []
 
-        _, lgmap = self.A.getLGMap() # Why does it return a tuple? Patches are returned in local numbering so we need to convert them to global.
+        # _, lgmap = self.A.getLGMap() # Why does it return a tuple? Patches are returned in local numbering so we need to convert them to global.
 
-        for i, patch_IS in enumerate(self.patches):
-            indices = lgmap.apply(patch_IS) # Convert local indices to global indices
-            new_patch_IS = PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF) # IS sets are immutable. So we need to create a new one
-            self.patches[i] = new_patch_IS # Replace the old IS with the new one
-            patch_IS.destroy() # Destroy the old IS to free memory
+        # for i, patch_IS in enumerate(self.patches):
+        #     indices = lgmap.apply(patch_IS) # Convert local indices to global indices
+        #     new_patch_IS = PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF) # IS sets are immutable. So we need to create a new one
+        #     self.patches[i] = new_patch_IS # Replace the old IS with the new one
+        #     patch_IS.destroy() # Destroy the old IS to free memory
 
-        for patch in self.patches:
-            indices = patch.getIndices()
-            n = len(indices)
-            submat = PETSc.Mat().createAIJ([n, n], comm=PETSc.COMM_SELF)
-            submat.setUp()
-            for i_local, i_global in enumerate(indices):
-                row = self.A.getValues([i_global], indices)  # returns list of values
-                submat.setValues([i_local], range(n), row[0])  # insert into local mat
-            submat.assemble()
-            self.submatrices.append(submat)
-        PETSc.Sys.Print(f"num patches: {len(self.patches)}, size first patch: {len(self.patches[0].getIndices())}")
+        # for patch in self.patches:
+        #     indices = patch.getIndices()
+        #     n = len(indices)
+        #     submat = PETSc.Mat().createAIJ([n, n], comm=PETSc.COMM_SELF)
+        #     submat.setUp()
+        #     for i_local, i_global in enumerate(indices):
+        #         row = self.A.getValues([i_global], indices)  # returns list of values
+        #         submat.setValues([i_local], range(n), row[0])  # insert into local mat
+        #     submat.assemble()
+        #     self.submatrices.append(submat)
+        # PETSc.Sys.Print(f"num patches: {len(self.patches)}, size first patch: {len(self.patches[0].getIndices())}")
 
     def update(self, pc):
         pass
@@ -191,25 +193,26 @@ class CyclicReductionPC2(PCBase):
 
         self.subvectors = []
         
-        for patch in self.patches:
-            indices = patch.getIndices()  # global indices as numpy array
-            values = x.getValues(indices)  # values from global Vec at those indices
-            subvec = PETSc.Vec().createSeq(len(indices), comm=PETSc.COMM_SELF)
-            subvec.setValues(range(len(indices)), values)
-            subvec.assemble()
-            self.subvectors.append(subvec)
+        # for patch in self.patches:
+        #     indices = patch.getIndices()  # global indices as numpy array
+        #     values = x.getValues(indices)  # values from global Vec at those indices
+        #     subvec = PETSc.Vec().createSeq(len(indices), comm=PETSc.COMM_SELF)
+        #     subvec.setValues(range(len(indices)), values)
+        #     subvec.assemble()
+        #     self.subvectors.append(subvec)
         
-        for lhs, rhs, patch in zip(self.submatrices, self.subvectors, self.patches):
-            ksp = PETSc.KSP().create(comm=fd.COMM_SELF)
-            ksp.setOperators(lhs)
-            ksp.setFromOptions()
-            ksp.setUp()
-            ksp.solve(rhs, rhs)
-            # rhs.view()
-            indices = patch.getIndices()  # global indices
-            values = rhs.getArray()       # get NumPy array from rhs
-            y.setValues(indices, values, addv=PETSc.InsertMode.INSERT_VALUES)
-        y.assemble()
+        # for lhs, rhs, patch in zip(self.submatrices, self.subvectors, self.patches):
+        #     ksp = PETSc.KSP().create(comm=fd.COMM_SELF)
+        #     ksp.setOperators(lhs)
+        #     ksp.setFromOptions()
+        #     ksp.setUp()
+        #     ksp.solve(rhs, rhs)
+        #     # rhs.view()
+        #     indices = patch.getIndices()  # global indices
+        #     values = rhs.getArray()       # get NumPy array from rhs
+        #     y.setValues(indices, values, addv=PETSc.InsertMode.INSERT_VALUES) # Any process can write globally. .ADD_VALUES for adding
+        # y.assemble()
+        y.scale(0.0)
 
         
     def applyTranspose(self, pc, x, y):

@@ -23,12 +23,12 @@ warnings.simplefilter("ignore", FutureWarning)
 #Problem parameters used if running this script
 class ProblemParameters:
     def __init__(self):
-        self.N = 9 # Number of time steps
+        self.N = 2 # Number of time steps
         self.dt = 0.001 #Specified instead of end time
         self.M = 10 # Number of spatial points
-        self.Mbase = 3 # Number of spatial points in base mesh
+        self.Mbase = 4 # Number of spatial points in base mesh
         self.Mref = 2 # Number of refinements in the mesh hierarchy
-        self.degree = {'space': 1,
+        self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
@@ -75,7 +75,7 @@ solver_parameters = {'snes_type': 'ksponly',
                     'mat_type': 'aij',
                     'ksp_type': 'fgmres',
                     "ksp_monitor_true_residual": None,
-                    "ksp_max_it": 100,
+                    "ksp_max_it": 1,
                     "ksp_gmres_restart": 100,
                     "ksp_atol": 1e-6,
                     "ksp_rtol": 1e-6,
@@ -99,7 +99,7 @@ solver_parameters = {'snes_type': 'ksponly',
                     }
 
 AllAtOnce = False
-Extruded = False
+Extruded = True
 
 if AllAtOnce:
     aaofunc = AllAtOnceFunction(ensemble, time_partition, U)

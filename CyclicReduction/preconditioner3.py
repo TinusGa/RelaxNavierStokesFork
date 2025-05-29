@@ -61,7 +61,6 @@ class ASMStarPC(ASMPatchPC):
     _prefix = "pc_star_"
 
     def get_patches(self, V):
-        # PETSc.Sys.Print(f"ASMStarPC: get_patches, rank {fd.COMM_WORLD.rank}",comm = fd.COMM_SELF)
         mesh = V._mesh
         mesh_dm = mesh.topology_dm
         if mesh.cell_set._extruded:
@@ -104,12 +103,15 @@ class ASMStarPC(ASMPatchPC):
         return ises
 
 class asQMGPC(AllAtOnceBlockPCBase):
-    prefix = 'sumting'
+    prefix = 'opts_'
     valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
 
+    @profiler()
     def initialize(self, pc):
-        pc.setOptionsPrefix('yoyo')
+        pc.setOptionsPrefix('asQMGPC_')
         super().initialize(pc, final_initialize=False)
+        
+        self.sub_solver_parameters = PETSc.Options(self.full_prefix).getAll()
 
         self.field_function_space = self.aaofunc.field_function_space
         self.function_space = self.aaofunc.function_space
@@ -125,26 +127,18 @@ class asQMGPC(AllAtOnceBlockPCBase):
         self.solvers = []
         self.corrections = []
 
-        self.solver_parameters = {'ksp_type': 'chebyshev',
-                             'ksp_chebyshev_esteig': '0,0.25,0,1.05',
-                             'ksp_max_it': 2,
-                             'ksp_convergence_test': 'skip',
-                             'pc_type': 'python',
-                             'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC3', # Contains firedrake.ASMStarPC
-                             'pc_opts': {'patch_type': 'star',
-                                                   'construct_dim': 0,
-                                                   'mat_ordering_type': 'natural',
-                                                   },
-                            }
-
         # Create AllAtOnce objects for each function space in the hierarchy
         for V, bcs in zip(self.function_spaces,self.bcs_list):
+
             u = AllAtOnceFunction(self.ensemble, self.time_partition, V)
             r = AllAtOnceCofunction(self.ensemble, self.time_partition, u.field_function_space.dual())
             form = AllAtOnceForm(u, self.dt, self.theta,
                                  self.form_mass, self.form_function,
-                                 bcs=bcs)  # Use the first set of bcs for all meshes
-            solver = LinearSolver(form, solver_parameters=self.solver_parameters, options_prefix='custom_mg_')
+                                 bcs=bcs)  
+            solver = LinearSolver(form, solver_parameters=self.sub_solver_parameters, 
+                                  options_prefix=self.full_prefix)
+            # solver = AllAtOnceSolver(form, u, solver_parameters=self.sub_solver_parameters,
+            #                          options_prefix=self.full_prefix)
             
             self.us.append(u)
             self.rs.append(r)
@@ -169,9 +163,11 @@ class asQMGPC(AllAtOnceBlockPCBase):
     def _record_diagnostics(self):
         pass
     
+    @profiler()
     def update(self, pc):
         pass
-
+    
+    @profiler()
     def apply_impl(self, pc, x, y):
         # Might need to move the v-cycle here
         # No, we can solve in initialize and just pass the solution to the apply function
@@ -191,6 +187,7 @@ class asQMGPC(AllAtOnceBlockPCBase):
             u_coarse = self.us[i+1]  
             r_coarse = self.rs[i+1]
 
+            # PETSc.Sys.Print(f"Pre-smooting")
             solver = self.solvers[i]     
             solver.solve(r_fine, u_fine)
             
@@ -203,8 +200,10 @@ class asQMGPC(AllAtOnceBlockPCBase):
             r_fine = r_coarse
         
         # Coarsest solve
+        # PETSc.Sys.Print(f"Coarse solve")
         solver = self.solvers[-1]
         solver.solve(r_fine, u_fine)
+
 
         u_coarse = u_fine
         r_coarse = r_fine
@@ -223,32 +222,29 @@ class asQMGPC(AllAtOnceBlockPCBase):
             
             u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
 
+            # PETSc.Sys.Print(f"Post-smooting")
             solver = self.solvers[i]
             solver.solve(r_fine, u_fine)
+
 
         y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
         
 
 class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
-    prefix = 'cyclic_reduction_'
+    prefix = 'cr_opts_'
     valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
 
     @profiler()
     def initialize(self,pc):
-        # Initialize is called once per rank
-        pc.setOptionsPrefix('cyclic_reduction_')
         super().initialize(pc, final_initialize=False)
+
+        self.patch_parameters = PETSc.Options(self.full_prefix).getAll()
 
         # All-at-once reference state
         self.state_func = self.aaofunc.copy()
         self.field_function_space = self.aaofunc.field_function_space # This is currently not compatible with how MG is set up
-
-        # Get the DM and the function space
-        dm = pc.getDM() # This returns a null pointer currently. Most likely because there is no DM set up for the MG context
-        # V = get_function_space(dm) # This doesn't work and throws a segmentation violation error.
-
-        # TODO: Find a way to make field_function_space and the underlying function space from the DM work in the MG context
+        self.function_space = self.aaofunc.function_space
 
         # This processor's spatial and temporal rank
         self.spatial_rank = self.ensemble.comm.rank
@@ -264,13 +260,36 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Initialize the desired patch PC. There's probably a better way to do this, but this works for now
         self.star_pc = ASMStarPC()
         self.star_pc.prefix = 'star'
-        self.patches = self.star_pc.get_patches(self.field_function_space) 
-        # TODO: This should extract patches for all timesteps owned on this temporal rank. Should correspond to an LBD system
-
-        # len(self.patches)*self.nlocal_timesteps = this ranks owned dofs of the global matrix
-        # PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}, time/space {self.temporal_rank,self.spatial_rank}: len patches {len(self.patches)}, len indices patches 0 {len(self.patches[0].indices)}",comm=fd.COMM_SELF)
+        self.patches = self.star_pc.get_patches(self.field_function_space) # Get the patches corresponding to one time-step
         
-        # TODO: Construct the appropriate LBD system for this rank based on the patches which will be used in apply()
+        # We need to shift from local to global numbering. 
+        # We also have to create new indices for each time-step on the slice. Best to do all in one go.
+        # Create new IS, cause PETSc IS's are immutable. 
+        ownership_start = pc.getOperators()[0].getOwnershipRange()[0]
+        set_size = self.field_function_space.node_set.size 
+        for i,patch in enumerate(self.patches):
+            # Shift from local to global numbering
+            indices = patch.indices + ownership_start
+            # Create a list of indices for each time-step
+            index_list = [indices + set_size*i for i in range(self.nlocal_timesteps)] 
+            # Flatten the list of indices
+            indices = [item for sublist in index_list for item in sublist]
+            # Create a new IS with the global indices
+            new_patch_IS = PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF)
+            self.patches[i] = new_patch_IS # Replace the old IS with the new one
+            patch.destroy() # Destroy the old IS to free memory
+
+
+        all_indices = [patch.indices for patch in self.patches]
+        all_indices_flat = [item for sublist in all_indices for item in sublist]
+
+        PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, num. patches: {len(self.patches)}, min idx: {min(all_indices_flat)}, max idx: {max(all_indices_flat)}, ownership range: {pc.getOperators()[0].getOwnershipRange()}, set_size: {set_size}",comm=fd.COMM_SELF)
+        fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
+        PETSc.Sys.Print(f"\n")
+
+        
+
+        
         
         # We can either use lists or perhaps a nested matrix to store the LBD systems
         self.diag_matrices = []
@@ -617,9 +636,11 @@ class ApproxCyclicReductionPC3(CyclicReductionPC3):
     comm : PETSc.Comm
         The MPI communicator over which to create the preconditioner.
     """
+    @profiler()
     def initialize(self, pc):
         super().initialize(pc)
 
+    @profiler()
     def apply_impl(self, pc, x, y):
         y.zero()
         
@@ -702,6 +723,7 @@ class ApproxCyclicReductionPC3(CyclicReductionPC3):
         # ---------------------------------------------------------------------------
         self.forward_substitution(self.lower_diag_matrices, self.diag_matrices, self.rhs, u_prev, y)
     
+    @profiler()
     def approx_forward_reduction(self, lower_diag, main_diag, rhs):
         """
         Perform the forward reduction step of the cyclic reduction algorithm.
@@ -770,6 +792,7 @@ class ApproxCyclicReductionPC3(CyclicReductionPC3):
 
         return L, D, f
     
+    @profiler()
     def forward_substitution(self, lower_diag, main_diag, rhs, u_prev, y):
         """
         Perform the back substitution step of the cyclic reduction algorithm.
