@@ -162,10 +162,18 @@ class CyclicReductionPC2(PCBase):
         self.star_pc.prefix = self.prefix
 
         self.patches = self.star_pc.get_patches(V)
-        PETSc.Sys.Print(f"Rank : {fd.COMM_WORLD.rank}, num patches: {len(self.patches)}, length each patch : {len(self.patches[0].indices)}, first patch : {self.patches[0].indices}",comm=fd.COMM_SELF)
+        # PETSc.Sys.Print(f"Rank : {fd.COMM_WORLD.rank}, num patches: {len(self.patches)}, length each patch : {len(self.patches[0].indices)}, first patch : {self.patches[0].indices}",comm=fd.COMM_SELF)
         fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
         # self.submatrices = []
 
+        # all_indices = [patch.indices for patch in self.patches]
+        # all_indices_flat = [item for sublist in all_indices for item in sublist]  # Add the first index of the ownership range to ensure all indices are global
+        # PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, num. patches: {len(self.patches)}, min idx: {min(all_indices_flat)}, max idx: {max(all_indices_flat)}, ownership range: {pc.getOperators()[0].getOwnershipRange()}",comm=fd.COMM_SELF)
+        patch_sum = 0
+        for patch in self.patches:
+            PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, patch indices: {patch.indices}", comm=fd.COMM_SELF)
+            patch_sum += len(patch.indices)
+        PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, total indices in patches: {patch_sum}", comm=fd.COMM_SELF)
         # _, lgmap = self.A.getLGMap() # Why does it return a tuple? Patches are returned in local numbering so we need to convert them to global.
 
         # for i, patch_IS in enumerate(self.patches):

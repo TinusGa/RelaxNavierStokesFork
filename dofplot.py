@@ -1,54 +1,38 @@
-# import matplotlib.pyplot as plt
-# from firedrake import *
-# from firedrake.pyplot import triplot
+from firedrake import *
 
-# # Create a unit square mesh
-# mesh = UnitSquareMesh(4, 4)
-# V = FunctionSpace(mesh, "CG", 1)
+mesh = UnitSquareMesh(3, 3)
+V = FunctionSpace(mesh, "CG", 2)
 
-# coordinates = mesh.coordinates.dat.data_ro
-# print(coordinates)
-# print(len(coordinates))
+u = Function(V)
+u.dat.data[:] = range(V.dim())  # Label each DoF with its global number
 
-# # V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
-# for iset in V.dof_dset:
-#     local_ises = iset.local_ises
-#     global_ises = iset.lgmap.apply(local_ises)  # This will convert local indices to global indices
-#     print(global_ises,len(global_ises))
+u.dat._vec.view()
 
-# # print("V_local_ises_indices:", V_local_ises_indices)
-
-# # Plot the mesh
-# fig, ax = plt.subplots()
-# triplot(mesh, axes=ax)
-# ax.set_aspect('equal')
-# plt.title("Mesh Visualization")
-# plt.savefig("mesh_plot.png", dpi=150)
-# plt.close(fig)
+VTKFile("cg2_dof_numbers.pvd").write(u)
 
 ############################################################
-from firedrake import *
-import matplotlib.pyplot as plt
-from firedrake.pyplot import triplot
-import numpy as np
+# from firedrake import *
+# import matplotlib.pyplot as plt
+# from firedrake.pyplot import triplot
+# import numpy as np
 
-# Create a mesh and function space
-mesh = UnitSquareMesh(4, 4)
-V = FunctionSpace(mesh, "CG", 2)
-rank = mesh.comm.rank
+# # Create a mesh and function space
+# mesh = UnitSquareMesh(4, 4)
+# V = FunctionSpace(mesh, "CG", 2)
+# rank = mesh.comm.rank
 
-# Extract owned vertex coordinates
-coords = mesh.coordinates.dat.data_ro.copy()
+# # Extract owned vertex coordinates
+# coords = mesh.coordinates.dat.data_ro.copy()
 
-# Plot mesh
-fig, ax = plt.subplots()
-triplot(mesh, axes=ax)
-ax.scatter(coords[:, 0], coords[:, 1], c=[rank]*len(coords), cmap="tab10", s=60, edgecolors="k", label=f"Rank {rank}")
-ax.set_title(f"DoF Ownership (Rank {rank})")
-ax.set_aspect("equal")
-ax.legend()
-plt.savefig(f"dof_ownership_rank{rank}.png", dpi=150)
-plt.close(fig)
+# # Plot mesh
+# fig, ax = plt.subplots()
+# triplot(mesh, axes=ax)
+# ax.scatter(coords[:, 0], coords[:, 1], c=[rank]*len(coords), cmap="tab10", s=60, edgecolors="k", label=f"Rank {rank}")
+# ax.set_title(f"DoF Ownership (Rank {rank})")
+# ax.set_aspect("equal")
+# ax.legend()
+# plt.savefig(f"dof_ownership_rank{rank}.png", dpi=150)
+# plt.close(fig)
 
 
 

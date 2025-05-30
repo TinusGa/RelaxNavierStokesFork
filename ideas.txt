@@ -1,37 +1,29 @@
-mesh <- SquareMesh(x,y,ensemble.comm)
-mesh_hierarchy <-
+Rank: 0, patch indices: [14 15 17 16]x
+Rank: 0, patch indices: [ 6  7  9 10  8]x
+Rank: 0, patch indices: [1 0 4]x
+Rank: 0, patch indices: [17 35 34 32 33]x
+Rank: 0, patch indices: [30 15 13 28 31 32 29]x
+Rank: 0, patch indices: [10 14 13 11 12]x
+Rank: 0, patch indices: [27  9 26 24 28 11 25]x
+Rank: 0, patch indices: [22  7  5 19 23 24 20]
+Rank: 0, patch indices: [0 6 5 2 3]
+Rank: 1, patch indices: [38 36 39]x
+Rank: 1, patch indices: [35 73 46 45 72]
+Rank: 0, patch indices: [21  1 19  2 18]
 
+Rank: 0, patch indices: [14 15 17 16]x
+Rank: 0, patch indices: [ 6  7  9 10  8]x
+Rank: 0, patch indices: [1 0 4]x
+Rank: 0, patch indices: [17 35 34 32 33]x
+Rank: 0, patch indices: [30 15 13 28 31 32 29]x
+Rank: 0, patch indices: [10 14 13 11 12]x
+Rank: 1, patch indices: [38 36 39]x
+Rank: 1, patch indices: [81 73 46 45 72]
+Rank: 1, patch indices: [56 52 48 47 49]
+Rank: 1, patch indices: [95 90 77 62 58 75 76]
+Rank: 0, patch indices: [27  9 26 24 28 11 25]x
+Rank: 0, patch indices: [22  7  5 19 23 24 20]
+Rank: 0, patch indices: [0 6 5 2 3]
+Rank: 1, patch indices: [68 64 63 65]
+Rank: 0, patch indices: [21  1 19  2 18]
 
-solver_parameters = {'snes_type': 'ksponly',
-                     'mat_type': 'aij',
-                     'ksp_type': 'fgmres',
-                     'ksp_monitor_true_residual': None,
-                     'ksp_max_it': 100,
-                     'ksp_gmres_restart': 100,
-                     'ksp_atol': 1e-6,
-                     'ksp_rtol': 1e-6,
-                     'pc_type': asQ_type_MG_PC,
-                     'pc_asQ_type_MG_PC_opts': relevant_custom_MG_options like relaxation ksp, ksp max it, coarse solver etc.,
-                     'pc_asQ_type_MG_PC_sub_PC': asQ_type_CR/MGR_PC,
-                     'pc_asQ_type_MG_PC_sub_PC_opts': ASMPatch options for example, 
-                    }
-
-
-                    'pc_type': 'mg',
-                    "pc_mg_type": "multiplicative",
-                    "pc_mg_cycles": "v",
-                    "mg_levels_ksp_type": "chebyshev",
-                    "mg_levels_ksp_chebyshev_esteig": "0,0.25,0,1.05",
-                    "mg_levels_ksp_max_it": 2,
-                    "mg_levels_ksp_convergence_test": "skip",
-                    "mg_levels_pc_type": "python",
-                    "mg_levels_pc_python_type": "CyclicReduction.CyclicReductionPC2", # Contains firedrake.ASMStarPC
-                    "mg_levels_pc_opts": {"patch_type": "star",
-                                          "construct_dim": 0,
-                                          "mat_ordering_type": "natural",
-                                          },
-                    "mg_coarse_pc_type": "python",
-                    "mg_coarse_pc_python_type": "firedrake.AssembledPC", # Could also use CR here?
-                    "mg_coarse_assembled_pc_type": "lu",
-                    "mg_coarse_assembled_pc_factor_mat_solver_type": "mumps",
-                    }

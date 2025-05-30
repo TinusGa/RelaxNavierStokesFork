@@ -23,11 +23,11 @@ warnings.simplefilter("ignore", FutureWarning)
 #Problem parameters used if running this script
 class ProblemParameters:
     def __init__(self):
-        self.N = 2 # Number of time steps
+        self.N = 1 # Number of time steps
         self.dt = 0.001 #Specified instead of end time
-        self.M = 10 # Number of spatial points
-        self.Mbase = 4 # Number of spatial points in base mesh
-        self.Mref = 2 # Number of refinements in the mesh hierarchy
+        self.M = 100 # Number of spatial points. Useless parameter!
+        self.Mbase = 2 # Number of spatial points in base mesh
+        self.Mref = 1 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False

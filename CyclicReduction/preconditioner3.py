@@ -261,28 +261,50 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         self.star_pc = ASMStarPC()
         self.star_pc.prefix = 'star'
         self.patches = self.star_pc.get_patches(self.field_function_space) # Get the patches corresponding to one time-step
+
+        lgmap = self.field_function_space.dof_dset.lgmap # Local to global map for the field function space
         
-        # We need to shift from local to global numbering. 
-        # We also have to create new indices for each time-step on the slice. Best to do all in one go.
-        # Create new IS, cause PETSc IS's are immutable. 
-        ownership_start = pc.getOperators()[0].getOwnershipRange()[0]
-        set_size = self.field_function_space.node_set.size 
-        for i,patch in enumerate(self.patches):
-            # Shift from local to global numbering
-            indices = patch.indices + ownership_start
-            # Create a list of indices for each time-step
-            index_list = [indices + set_size*i for i in range(self.nlocal_timesteps)] 
-            # Flatten the list of indices
-            indices = [item for sublist in index_list for item in sublist]
-            # Create a new IS with the global indices
+        for i,iset in enumerate(self.patches):
+            indices = lgmap.apply(iset.indices) 
             new_patch_IS = PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF)
             self.patches[i] = new_patch_IS # Replace the old IS with the new one
-            patch.destroy() # Destroy the old IS to free memory
+            iset.destroy() # Destroy the old IS to free memory
+            # PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, patch indices: {indices}", comm=fd.COMM_SELF)
+        fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
+
+        # first_timestep = self.aaoform.layout.transform_index(0,'l','g') # Get the first timestep on this slice
+        # cumulative_time_partition = np.cumsum(self.time_partition) - 1 # -1 to account for zero indexing
+        # current_timeslice = self.find_index(first_timestep, cumulative_time_partition) # Find the current timeslice for the first timestep
+        # global_start = self.function_space.dim()*current_timeslice
+    
+        # # We need to shift from local to global numbering. 
+        # # We also have to create new indices for each time-step on the slice. Best to do all in one go.
+        # # Create new IS, cause PETSc IS's are immutable. 
+        # ownership_start = pc.getOperators()[0].getOwnershipRange()[0]
+        # PETSc.Sys.Print(f"ranges : {pc.getOperators()[0].getOwnershipRanges()}")
+        set_size = self.field_function_space.node_set.size 
+        # PETSc.Sys.Print(f"field f'n space dim {self.field_function_space.dim()}")
+        # for i,patch in enumerate(self.patches):
+        #     # Shift from local to global numbering
+        #     # indices = patch.indices + ownership_start # Shift indices to global numbering
+        #     indices = patch.indices + ownership_start
+        #     #Create a list of indices for each time-step
+        #     index_list = [indices + set_size*i for i in range(self.nlocal_timesteps)] 
+        #     #Flatten the list of indices
+        #     indices = [item for sublist in index_list for item in sublist]
+        #     #Create a new IS with the global indices
+
+        #     new_patch_IS = PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF)
+        #     self.patches[i] = new_patch_IS # Replace the old IS with the new one
+        #     patch.destroy() # Destroy the old IS to free memory
+
+        # for patch in self.patches:
+        #     PETSc.Sys.Print(f"Patch indices: {patch.indices}", comm=fd.COMM_SELF)
+        #     # PETSc.Sys.Print(f"Patch size: {len(patch.indices)}", comm=fd.COMM_SELF)
 
 
         all_indices = [patch.indices for patch in self.patches]
         all_indices_flat = [item for sublist in all_indices for item in sublist]
-
         PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, num. patches: {len(self.patches)}, min idx: {min(all_indices_flat)}, max idx: {max(all_indices_flat)}, ownership range: {pc.getOperators()[0].getOwnershipRange()}, set_size: {set_size}",comm=fd.COMM_SELF)
         fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
         PETSc.Sys.Print(f"\n")
@@ -324,6 +346,12 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
                                             comm=self.ensemble.ensemble_comm) # Not currently used for anything
         self.initialized = True
 
+
+    def find_index(self, number, bounds):
+        for i, b in enumerate(bounds):
+            if number <= b:
+                return i
+        return len(bounds)
 
     @profiler()
     def _record_diagnostics(self):
@@ -444,11 +472,13 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Temporal rank 0 is offset from other ranks by 1
         offset = 1 if self.temporal_rank == 0 else 0
         
-        # Reduce onto these variables. L and D are the lower diagonal and main diagonal
-        # matrices respectively of type 'mpiaij'.
-        L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
+        
+            
 
         if len(main_diag) > 1: # This processor owns more than one timestep, so we reduce
+            # Reduce onto these variables. L and D are the lower diagonal and main diagonal
+            # matrices respectively of type 'mpiaij'.
+            L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
             for i in range(offset + 1, self.nlocal_timesteps):
                 L_next = lower_diag[i].copy()
                 D_next = main_diag[i].copy()
@@ -490,6 +520,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
                 L_next.destroy()
                 D_next.destroy()
                 f_next.destroy()
+            else:
+                L, D, f = lower_diag[0].copy(), main_diag[0].copy(), rhs[0].copy()
                 
         return L, D, f
 
@@ -745,12 +777,11 @@ class ApproxCyclicReductionPC3(CyclicReductionPC3):
         
         # Temporal rank 0 is offset from other ranks by 1
         offset = 1 if self.temporal_rank == 0 else 0
-        
-        # Reduce onto these variables. L and D are the lower diagonal and main diagonal
-        # matrices respectively of type 'mpiaij'.
-        L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
 
         if len(main_diag) > 1: # This processor owns more than one timestep, so we reduce
+            # Reduce onto these variables. L and D are the lower diagonal and main diagonal
+            # matrices respectively of type 'mpiaij'.
+            L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
             for i in range(offset + 1, self.nlocal_timesteps):
                 L_next = lower_diag[i].copy()
                 D_next = main_diag[i].copy()
@@ -773,22 +804,25 @@ class ApproxCyclicReductionPC3(CyclicReductionPC3):
                 D_next.destroy()
                 f_next.destroy()
 
-        L.destroy()
-        D.destroy()
-        # f is now correct rhs
+            L.destroy()
+            D.destroy()
+            # f is now correct rhs
 
-        # Let's do a BIIIG timestep
+            # Let's do a BIIIG timestep
 
-        # How many big steps should we do?
-        factor = fd.Constant(len(main_diag)-1)
+            # How many big steps should we do?
+            factor = fd.Constant(len(main_diag)-1)
 
-        t = self.time[0]
-        v = fd.TestFunction(self.field_function_space)
-        u = fd.TrialFunction(self.field_function_space)
-        M = self.form_mass(u, v)
-        K = self.form_function(u, v, t)
-        D = fd.assemble(factor*self.dt1*M + self.theta*K, bcs=self.block_bcs).petscmat
-        L = fd.assemble(-1*factor*self.dt1*M, bcs=self.block_bcs).petscmat
+            t = self.time[0]
+            v = fd.TestFunction(self.field_function_space)
+            u = fd.TrialFunction(self.field_function_space)
+            M = self.form_mass(u, v)
+            K = self.form_function(u, v, t)
+            D = fd.assemble(factor*self.dt1*M + self.theta*K, bcs=self.block_bcs).petscmat
+            L = fd.assemble(-1*factor*self.dt1*M, bcs=self.block_bcs).petscmat
+        else: 
+            # If we only own one timestep, we just return the first diagonal and lower diagonal matrices
+            L, D, f = lower_diag[0].copy(), main_diag[0].copy(), rhs[0].copy()
 
         return L, D, f
     

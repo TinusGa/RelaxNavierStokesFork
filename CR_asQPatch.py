@@ -13,23 +13,23 @@ warnings.simplefilter("ignore", FutureWarning)
 
 class ProblemParameters:
     def __init__(self):
-        self.N = 4 # Number of time steps
+        self.N = 3 # Number of time steps
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
-        self.Mbase = 3 # Number of spatial points in base mesh
+        self.Mbase = 2 # Number of spatial points in base mesh
         self.Mref = 1 # Number of refinements in the mesh hierarchy
-        self.degree = {'space': 1,
+        self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.solver = None
-        self.Pt = 2 # Processors in time
+        self.Pt = 1 # Processors in time
         self.theta = 1 # Theta parameter for the time-stepping scheme
 
 parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [16,16]
+time_partition = [3]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -64,12 +64,12 @@ for mesh in mesh_hierarchy:
 # Define initial condition
 U = function_spaces[-1] 
 # V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
-for iset in U.dof_dset:
-    PETSc.Sys.Print(f"dir iset: {(iset.dim)}")
-    local_ises = iset.field_ises[0]
-    global_ises = local_ises.indices
-    # global_ises = iset.lgmap.apply(local_ises)  # This will convert local indices to global indices
-    PETSc.Sys.Print(global_ises,len(global_ises),"\n", comm=ensemble.ensemble_comm)
+# for iset in U.dof_dset:
+#     PETSc.Sys.Print(f"dir iset: {(iset.dim)}")
+#     local_ises = iset.field_ises[0]
+#     global_ises = local_ises.indices
+#     # global_ises = iset.lgmap.apply(local_ises)  # This will convert local indices to global indices
+#     PETSc.Sys.Print(global_ises,len(global_ises),"\n", comm=ensemble.ensemble_comm)
 
 x, y = SpatialCoordinate(U.mesh())
 
