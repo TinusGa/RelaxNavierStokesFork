@@ -238,7 +238,6 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
     @profiler()
     def initialize(self,pc):
         super().initialize(pc, final_initialize=False)
-
         self.patch_parameters = PETSc.Options(self.full_prefix).getAll()
 
         # All-at-once reference state
@@ -260,17 +259,28 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Initialize the desired patch PC. There's probably a better way to do this, but this works for now
         self.star_pc = ASMStarPC()
         self.star_pc.prefix = 'star'
-        self.patches = self.star_pc.get_patches(self.field_function_space) # Get the patches corresponding to one time-step
+        self.patches = self.star_pc.get_patches(self.function_space) # Get path IS in local numbering
+        lgmap = self.function_space.dof_dset.lgmap # Local to global map for the function space
+        self.patches = tuple(lgmap.applyIS(iset) for iset in self.patches) # Convert local indices to global indices
 
-        lgmap = self.field_function_space.dof_dset.lgmap # Local to global map for the field function space
+        # for iet in self.patches:
+        #     PETSc.Sys.Print(f"RANK: {fd.COMM_WORLD.rank}. Patch indices: {iet.indices}", comm=fd.COMM_SELF)
+            # PETSc.Sys.Print(f"Patch size: {len(iet.indices)}", comm=fd.COMM_SELF)
+        # PETSc.Sys.Print(f"I arrive here 1", comm=fd.COMM_SELF)
+        self.dt1 = fd.Constant(1/self.dt)
+        self.theta = fd.Constant(1)
+        t = self.time[0] # Currently no bueno
+        v = fd.TestFunction(self.function_space)
+        u = fd.TrialFunction(self.function_space)
+        M = fd.inner(u,v)*fd.dx
+        K = self.form_function(u, v, t)
+        A = fd.assemble(self.dt1*M + self.theta*K).petscmat # Main diagonal block system
+        # PETSc.Sys.Print(f"I arrive here 2", comm=fd.COMM_SELF)
         
-        for i,iset in enumerate(self.patches):
-            indices = lgmap.apply(iset.indices) 
-            new_patch_IS = PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF)
-            self.patches[i] = new_patch_IS # Replace the old IS with the new one
-            iset.destroy() # Destroy the old IS to free memory
-            # PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, patch indices: {indices}", comm=fd.COMM_SELF)
-        fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
+        self.submats = A.createSubMatrices(self.patches,self.patches)
+        self.subvecs = [submat.createVecs(side='right') for submat in self.submats] # Create subvectors for each submatrix
+
+        # TODO: Should set up ksp solvers here so they can be reused in apply_impl() maybe?????????
 
         # first_timestep = self.aaoform.layout.transform_index(0,'l','g') # Get the first timestep on this slice
         # cumulative_time_partition = np.cumsum(self.time_partition) - 1 # -1 to account for zero indexing
@@ -303,13 +313,10 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         #     # PETSc.Sys.Print(f"Patch size: {len(patch.indices)}", comm=fd.COMM_SELF)
 
 
-        all_indices = [patch.indices for patch in self.patches]
-        all_indices_flat = [item for sublist in all_indices for item in sublist]
-        PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, num. patches: {len(self.patches)}, min idx: {min(all_indices_flat)}, max idx: {max(all_indices_flat)}, ownership range: {pc.getOperators()[0].getOwnershipRange()}, set_size: {set_size}",comm=fd.COMM_SELF)
-        fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
-        PETSc.Sys.Print(f"\n")
-
-        
+        # all_indices = [patch.indices for patch in self.patches]
+        # all_indices_flat = [item for sublist in all_indices for item in sublist]
+        # PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}, num. patches: {len(self.patches)}, min idx: {min(all_indices_flat)}, max idx: {max(all_indices_flat)}, ownership range: {pc.getOperators()[0].getOwnershipRange()}, set_size: {set_size}",comm=fd.COMM_SELF)
+        # fd.COMM_WORLD.Barrier() # Ensure all ranks have the same number of patches
 
         
         
@@ -366,6 +373,88 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
+        """
+        Custom additive Schwarz-style preconditioner:
+        - Assumes self.patches: tuple of PETSc IS (global indices for patches)
+        - Assumes self.submats: tuple of sequential patch matrices (one per patch)
+        """
+
+        # --- Step 1: Build a ghosted local vector covering all patch DOFs ---
+        patch_indices = [iset.getIndices() for iset in self.patches]
+        unique_global_ids = sorted(set(i for indices in patch_indices for i in indices))
+        global_to_local = {g: i for i, g in enumerate(unique_global_ids)}
+
+        # Unified IS and ghosted local vector (covers all DOFs needed by patches)
+        lis = PETSc.IS().createGeneral(unique_global_ids, comm=fd.COMM_SELF)
+        local_vec = PETSc.Vec().createSeq(len(unique_global_ids), comm=fd.COMM_SELF)
+
+        # Scatter from parallel input x to ghosted local vector
+        with x.global_vec_ro() as xvec:
+            is_to = PETSc.IS().createStride(len(unique_global_ids), 0, 1, comm=fd.COMM_SELF)
+            scatter = PETSc.Scatter().create(xvec, lis, local_vec, is_to)
+            scatter.begin(xvec, local_vec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+            scatter.end(xvec, local_vec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+
+        # --- Step 2: Solve patch systems locally ---
+        with y.global_vec_wo() as yvec:
+            yvec.set(0)  # Zero output before accumulation
+            for A_patch, patch, patch_gids in zip(self.submats, self.patches, patch_indices):
+                # Map global patch DOFs to local vector indices
+                local_patch_ids = [global_to_local[gid] for gid in patch_gids]
+
+                # Use createVecs to get RHS and solution vectors
+                rhs, sol = A_patch.createVecs()
+
+                # Scatter from ghosted vector into RHS
+                is_from = PETSc.IS().createGeneral(local_patch_ids, comm=fd.COMM_SELF)
+                is_to = PETSc.IS().createStride(len(local_patch_ids), 0, 1, comm=fd.COMM_SELF)
+                s = PETSc.Scatter().create(local_vec, is_from, rhs, is_to)
+                s.begin(local_vec, rhs, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+                s.end(local_vec, rhs, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+                
+                F = self.get_factored_matrix(A_patch, fd.COMM_SELF)
+                F.solve(rhs, sol)
+
+                # # Accumulate result back into global y
+                yvec.setValues(patch_gids, sol.getArray(), addv=PETSc.InsertMode.ADD_VALUES)
+            yvec.assemble()
+
+    
+    @profiler()
+    def apply_impl1(self, pc, x, y):
+        """
+        Apply the cyclic reduction preconditioner to the vector x and store the result in y.
+        This method is called by the PETSc solver.
+        """
+        self.patches
+        self.submats
+        self.subvectors = [] 
+
+        with x.global_vec_ro() as xvec:
+            for patch in self.patches:  # each `patch` is a global IS
+                subvec = PETSc.Vec().createSeq(patch.getSize(), comm=self.ensemble.comm)
+                is_from = patch
+                is_to = PETSc.IS().createGeneral(range(patch.getSize()), comm=PETSc.COMM_SELF)
+                scatter = PETSc.Scatter().create(xvec, is_from, subvec, is_to)
+                scatter.begin(xvec, subvec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+                scatter.end(xvec, subvec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+                subvec.getArray()
+                self.subvectors.append(subvec)
+
+        with y.global_vec_wo() as yvec:
+            for lhs, rhs, patch in zip(self.submats, self.subvectors, self.patches):
+                ksp = PETSc.KSP().create(comm=self.ensemble.comm)
+                ksp.setOperators(lhs)
+                ksp.setFromOptions()
+                ksp.setUp()
+                ksp.solve(rhs, rhs)
+                indices = patch.getIndices()  # global indices
+                values = rhs.getArray()       # get NumPy array from rhs
+                yvec.setValues(indices, values, addv=PETSc.InsertMode.ADD_VALUES) # Any process can write globally. .ADD_VALUES for adding
+            yvec.assemble()
+
+    @profiler()
+    def apply_impl2(self, pc, x, y):
         # PETSc.Sys.Print(f"Apply called: y.size = {y._vec.getSize()}",comm=fd.COMM_SELF) # Clearly no MG here
 
         y.zero()

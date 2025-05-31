@@ -16,7 +16,7 @@ class ProblemParameters:
         self.N = 3 # Number of time steps
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
-        self.Mbase = 2 # Number of spatial points in base mesh
+        self.Mbase = 6 # Number of spatial points in base mesh
         self.Mref = 1 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
@@ -29,7 +29,7 @@ parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [3]
+time_partition = [6]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -63,16 +63,7 @@ for mesh in mesh_hierarchy:
 
 # Define initial condition
 U = function_spaces[-1] 
-# V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
-# for iset in U.dof_dset:
-#     PETSc.Sys.Print(f"dir iset: {(iset.dim)}")
-#     local_ises = iset.field_ises[0]
-#     global_ises = local_ises.indices
-#     # global_ises = iset.lgmap.apply(local_ises)  # This will convert local indices to global indices
-#     PETSc.Sys.Print(global_ises,len(global_ises),"\n", comm=ensemble.ensemble_comm)
-
 x, y = SpatialCoordinate(U.mesh())
-
 u0 = Function(U)
 
 # Two different IC's and BC's to test
@@ -112,7 +103,7 @@ mg_levels_parameters = {'ksp_type': 'chebyshev',
                         'ksp_max_it': 2,
                         'ksp_convergence_test': 'skip',
                         'pc_type': 'python',
-                        'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC3',
+                        'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
                         'cr_opts': cr_parameters
                         }
 

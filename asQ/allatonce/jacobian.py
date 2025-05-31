@@ -197,4 +197,7 @@ class AllAtOnceJacobian(TimePartitionMixin):
         mat.setPythonContext(self)
         mat.setUp()
 
-        return mat
+        A = fd.assemble(self.form, bcs=self.bcs).petscmat
+        PETSc.Sys.Print(f"Jacobian matrix A: {A.getSize()}, getOwnershipRanges: {A.getOwnershipRanges()}, ownershiprange {A.getOwnershipRange()}", comm=fd.COMM_SELF)
+
+        return A

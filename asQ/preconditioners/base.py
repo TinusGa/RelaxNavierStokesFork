@@ -51,6 +51,8 @@ class AllAtOncePCBase(TimePartitionMixin):
 
         # grab aao objects off petsc mat python context
         prefix = pc.getOptionsPrefix()
+        if prefix is None:
+            prefix='pc_python_'
         self.full_prefix = prefix + self.prefix
         if hasattr(self, "deprecated_prefix"):
             self.deprecated_prefix = prefix + self.deprecated_prefix
@@ -58,7 +60,9 @@ class AllAtOncePCBase(TimePartitionMixin):
             self.deprecated_prefix = None
 
         A, _ = pc.getOperators()
+        PETSc.Sys.Print(f"Maybe here ??")
         jacobian = A.getPythonContext()
+        PETSc.Sys.Print(f"Maybe here 2 ??")
         self.jacobian = jacobian
         self._time_partition_setup(jacobian.ensemble, jacobian.time_partition)
 

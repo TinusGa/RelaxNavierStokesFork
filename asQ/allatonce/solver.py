@@ -109,19 +109,24 @@ class AllAtOnceSolver(TimePartitionMixin):
 
         self.jacobian_mat = self.jacobian.petsc_mat()
 
+        PETSc.Sys.Print(f"I get here 1")
+
         def form_jacobian(snes, X, J, P):
             self.pre_jacobian_callback(self, X, J)
             self.jacobian.update(X)
             self.post_jacobian_callback(self, X, J)
             J.assemble()
             P.assemble()
-
+        
+        PETSc.Sys.Print(f"I get here 2")
+        
         self.snes.setJacobian(form_jacobian,
                               J=self.jacobian_mat,
                               P=self.jacobian_mat)
-
+        PETSc.Sys.Print(f"I get here 3")
         # complete the snes setup
         self.options.set_from_options(self.snes)
+        PETSc.Sys.Print(f"I get here 4")
 
     @profiler()
     def solve(self, rhs=None):
@@ -130,15 +135,21 @@ class AllAtOnceSolver(TimePartitionMixin):
 
         :arg rhs: optional constant part of the system.
         """
+        PETSc.Sys.Print(f"I get here 5")
         with self.aaofunc.global_vec() as gvec, self.options.inserted_options():
+            PETSc.Sys.Print(f"I get here 5.5")
             if rhs is None:
+                PETSc.Sys.Print(f"I get here 5.6")
                 self.snes.solve(None, gvec)
+                PETSc.Sys.Print(f"I get here 5.7")
             else:
                 if not isinstance(rhs, AllAtOnceCofunction):
                     msg = f"Right hand side of all-at-once problem must be AllAtOnceCofunction not {type(rhs)}."
                     raise TypeError(msg)
                 with rhs.global_vec_ro() as rvec:
+                    PETSc.Sys.Print(f"I get here 6")
                     self.snes.solve(rvec, gvec)
+                    PETSc.Sys.Print(f"I get here 7")
 
 
 class LinearSolver(TimePartitionMixin):
