@@ -16,8 +16,8 @@ class ProblemParameters:
         self.N = 3 # Number of time steps
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
-        self.Mbase = 6 # Number of spatial points in base mesh
-        self.Mref = 1 # Number of refinements in the mesh hierarchy
+        self.Mbase = 4 # Number of spatial points in base mesh
+        self.Mref = 0 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
@@ -29,7 +29,7 @@ parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [6]
+time_partition = [1,1]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -111,10 +111,10 @@ solver_parameters = {'snes_type': 'ksponly',
                      'mat_type': 'aij',
                      'ksp_type': 'fgmres',
                      'ksp_monitor_true_residual': None,
-                     'ksp_max_it': 100,
+                     'ksp_max_it': 5,
                      'ksp_gmres_restart': 100,
-                     'ksp_atol': 1e-6,
-                     'ksp_rtol': 1e-6,
+                     'ksp_atol': 1e-8,
+                     'ksp_rtol': 1e-8,
                      'pc_type': 'python',
                      'pc_python_type': 'CyclicReduction.asQMGPC',
                      'asQMGPC_opts': mg_levels_parameters

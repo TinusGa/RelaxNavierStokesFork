@@ -97,6 +97,9 @@ class AllAtOnceJacobian(TimePartitionMixin):
         if self.jacobian_state == 'reference' and self.reference_state is None:
             raise ValueError("AllAtOnceJacobian must be provided a reference state to use \'reference\' for aaos_jacobian_state.")
 
+        # Also need a non mat-free for the patch preconditioner
+        self.mat = fd.assemble(self.form, bcs=self.bcs).petscmat
+
         self.update()
 
     @profiler()
@@ -197,7 +200,4 @@ class AllAtOnceJacobian(TimePartitionMixin):
         mat.setPythonContext(self)
         mat.setUp()
 
-        A = fd.assemble(self.form, bcs=self.bcs).petscmat
-        PETSc.Sys.Print(f"Jacobian matrix A: {A.getSize()}, getOwnershipRanges: {A.getOwnershipRanges()}, ownershiprange {A.getOwnershipRange()}", comm=fd.COMM_SELF)
-
-        return A
+        return mat 

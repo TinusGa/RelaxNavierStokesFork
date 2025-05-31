@@ -137,8 +137,6 @@ class asQMGPC(AllAtOnceBlockPCBase):
                                  bcs=bcs)  
             solver = LinearSolver(form, solver_parameters=self.sub_solver_parameters, 
                                   options_prefix=self.full_prefix)
-            # solver = AllAtOnceSolver(form, u, solver_parameters=self.sub_solver_parameters,
-            #                          options_prefix=self.full_prefix)
             
             self.us.append(u)
             self.rs.append(r)
@@ -240,6 +238,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         super().initialize(pc, final_initialize=False)
         self.patch_parameters = PETSc.Options(self.full_prefix).getAll()
 
+        self.mat = self.jacobian.mat # Obtain the monolithic matrix from the Jacobian. Of type 'aij' or 'mpiaij'
+
         # All-at-once reference state
         self.state_func = self.aaofunc.copy()
         self.field_function_space = self.aaofunc.field_function_space # This is currently not compatible with how MG is set up
@@ -263,29 +263,24 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         lgmap = self.function_space.dof_dset.lgmap # Local to global map for the function space
         self.patches = tuple(lgmap.applyIS(iset) for iset in self.patches) # Convert local indices to global indices
 
-        # for iet in self.patches:
-        #     PETSc.Sys.Print(f"RANK: {fd.COMM_WORLD.rank}. Patch indices: {iet.indices}", comm=fd.COMM_SELF)
-            # PETSc.Sys.Print(f"Patch size: {len(iet.indices)}", comm=fd.COMM_SELF)
-        # PETSc.Sys.Print(f"I arrive here 1", comm=fd.COMM_SELF)
-        self.dt1 = fd.Constant(1/self.dt)
-        self.theta = fd.Constant(1)
-        t = self.time[0] # Currently no bueno
-        v = fd.TestFunction(self.function_space)
-        u = fd.TrialFunction(self.function_space)
-        M = fd.inner(u,v)*fd.dx
-        K = self.form_function(u, v, t)
-        A = fd.assemble(self.dt1*M + self.theta*K).petscmat # Main diagonal block system
-        # PETSc.Sys.Print(f"I arrive here 2", comm=fd.COMM_SELF)
-        
-        self.submats = A.createSubMatrices(self.patches,self.patches)
+        # All indices are correct, but only for the first time-slice. Therefore, we must shift the IS's 
+        # of ranks not belonging to this time-slice to their own time-slice.
+        first_timestep = self.aaoform.layout.transform_index(0,'l','g') # Get the first timestep for this ranks time-slice in global numbering
+        cumulative_time_partition = np.cumsum(self.time_partition) - 1 # -1 to account for zero indexing
+        current_timeslice = self.find_index(first_timestep, cumulative_time_partition) # Find which time-slice this rank belongs to
+        global_start = self.function_space.dim()*current_timeslice # The offset for the global indices of this time-slice
+        self.patches = tuple(self.shiftIS(iset, global_start) for iset in self.patches) # Shift the indices of the IS's to the correct time-slice
+
+        for patch in self.patches:
+            PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}. Patch indices: {patch.indices}", comm=fd.COMM_SELF)
+            # PETSc.Sys.Print(f"Patch size: {len(patch.indices)}", comm=fd.COMM_SELF)
+
+        self.submats = self.mat.createSubMatrices(self.patches,self.patches)
         self.subvecs = [submat.createVecs(side='right') for submat in self.submats] # Create subvectors for each submatrix
 
         # TODO: Should set up ksp solvers here so they can be reused in apply_impl() maybe?????????
 
-        # first_timestep = self.aaoform.layout.transform_index(0,'l','g') # Get the first timestep on this slice
-        # cumulative_time_partition = np.cumsum(self.time_partition) - 1 # -1 to account for zero indexing
-        # current_timeslice = self.find_index(first_timestep, cumulative_time_partition) # Find the current timeslice for the first timestep
-        # global_start = self.function_space.dim()*current_timeslice
+        
     
         # # We need to shift from local to global numbering. 
         # # We also have to create new indices for each time-step on the slice. Best to do all in one go.
@@ -359,6 +354,14 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             if number <= b:
                 return i
         return len(bounds)
+    
+    def shiftIS(self, iset, shift, comm=fd.COMM_SELF):
+        """
+        Shift the indices of a PETSc IS by a given amount.
+        """
+        new_indices = iset.getIndices() + shift
+        iset.destroy()  # Destroy the old IS to free memory
+        return PETSc.IS().createGeneral(new_indices, comm=comm)
 
     @profiler()
     def _record_diagnostics(self):

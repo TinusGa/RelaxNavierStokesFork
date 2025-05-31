@@ -60,9 +60,7 @@ class AllAtOncePCBase(TimePartitionMixin):
             self.deprecated_prefix = None
 
         A, _ = pc.getOperators()
-        PETSc.Sys.Print(f"Maybe here ??")
         jacobian = A.getPythonContext()
-        PETSc.Sys.Print(f"Maybe here 2 ??")
         self.jacobian = jacobian
         self._time_partition_setup(jacobian.ensemble, jacobian.time_partition)
 
