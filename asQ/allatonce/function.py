@@ -66,11 +66,16 @@ class AllAtOnceFunctionBase(TimePartitionMixin):
         # function space for the slice of the all-at-once system on this process
         self.function_space = reduce(mul, (self.field_function_space
                                            for _ in range(self.nlocal_timesteps)))
+        
+        self.global_function_space = reduce(mul, (self.field_function_space 
+                                                  for _ in range(self.ntimesteps)))
 
         self.ncomponents = len(self.field_function_space.subfunctions)
 
         # this will be renamed either self.function or self.cofunction
         self._fbuf = fd.Function(self.function_space)
+
+        self.global_function = fd.Function(self.global_function_space)
 
         # Functions to view each timestep
         def field_function(i):

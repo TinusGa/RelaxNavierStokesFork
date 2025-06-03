@@ -17,7 +17,7 @@ class ProblemParameters:
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
         self.Mbase = 4 # Number of spatial points in base mesh
-        self.Mref = 0 # Number of refinements in the mesh hierarchy
+        self.Mref = 1 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
@@ -29,7 +29,7 @@ parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [1,1]
+time_partition = [6]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -42,8 +42,6 @@ mesh_hierarchy = MeshHierarchy(base_mesh,parameters.Mref)
 
 
 mesh = mesh_hierarchy[-1] # This is the finest mesh
-
-
 
 # Define function spaces
 function_spaces = []
@@ -82,6 +80,44 @@ def form_mass(u, v):
 def form_function(u, v, t):
     return inner(grad(u), grad(v))*dx
 
+def mat_from_mesh():
+    mesh = UnitSquareMesh(nx = parameters.Mbase, ny = parameters.Mbase,
+                           distribution_parameters=distribution_parameters)
+    extruded_mesh = ExtrudedMesh(mesh, layers=sum(time_partition), layer_height=parameters.dt,
+                                extrusion_type='uniform')
+    n = FacetNormal(extruded_mesh)
+
+    #Define function space
+    space_element = FiniteElement("CG", triangle, parameters.degree['space'])
+    time_element = FiniteElement("DG", interval, parameters.degree['time'])
+    spacetime_element = TensorProductElement(space_element,time_element)
+    U = FunctionSpace(extruded_mesh,spacetime_element)
+
+    #Define initial condition
+    x, y, t = SpatialCoordinate(U.mesh())
+    u0 = interpolate(sin(0.25*pi*x)*cos(2*pi*y), U)
+
+    bcs = [DirichletBC(U, 0, sub_domain=1)]
+
+    #Set up residual
+    u = TrialFunction(U)
+    phi = TestFunction(U)
+
+    gradu = as_vector([u.dx(0),
+                        u.dx(1)])
+    gradphi = as_vector([phi.dx(0),
+                            phi.dx(1)])
+    def plus(v):
+        return -0.5*jump(v,n[2]) + avg(v)
+
+    F_space = inner(gradu,gradphi) * dx(degree=16)
+    F_time = u.dx(2) * phi * dx(degree=16) - jump(u,n[2]) * plus(phi) * dS_h(degree=16)
+    F_ic = 0.5*(u-u0)*phi*ds_b
+
+    F = F_space + F_time
+
+    return assemble(F, bcs=bcs).petscmat
+
 aaofunc = AllAtOnceFunction(ensemble, time_partition, U)
 aaofunc.initial_condition.assign(u0)
 
@@ -111,7 +147,7 @@ solver_parameters = {'snes_type': 'ksponly',
                      'mat_type': 'aij',
                      'ksp_type': 'fgmres',
                      'ksp_monitor_true_residual': None,
-                     'ksp_max_it': 5,
+                     'ksp_max_it': 100,
                      'ksp_gmres_restart': 100,
                      'ksp_atol': 1e-8,
                      'ksp_rtol': 1e-8,
@@ -127,11 +163,14 @@ solver = AllAtOnceSolver(aaoform,
 
 # Some useful prints
 processes = COMM_WORLD.size
-PETSc.Sys.Print(f"Running with {processes} MPI processes. {parameters.Pt} in time, each with {processes//parameters.Pt} in space")
-PETSc.Sys.Print(f"Time partition: {time_partition}, total time steps: {parameters.N}")
+PETSc.Sys.Print(f"Running with {processes} MPI processes. {len(time_partition)} in time, each with {processes//len(time_partition)} in space")
+PETSc.Sys.Print(f"Time partition: {time_partition}, total time steps: {sum(time_partition)}")
 
 A,_ = solver.snes.ksp.getOperators()
 PETSc.Sys.Print(f"Size A: {A.getSize()}, with ownership ranges: {A.getOwnershipRanges()}")
+
+# J = mat_from_mesh()
+# PETSc.Sys.Print(f"Size J: {J.getSize()}, with ownership ranges: {J.getOwnershipRanges()}")
 
 space_dofs = U.dim()
 time_dofs = sum(time_partition)
@@ -142,7 +181,7 @@ start = time()
 solver.solve()
 PETSc.Sys.Print(f"Finished solve in {time()-start}s")
 
-save_to_VTK = False
+save_to_VTK = True
 # --------------------------------------------------
 # Output results to ParaView
 # --------------------------------------------------

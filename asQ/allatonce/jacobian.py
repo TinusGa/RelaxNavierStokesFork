@@ -5,6 +5,8 @@ from asQ.profiling import profiler
 from asQ.common import get_option_from_list
 from asQ.allatonce.mixin import TimePartitionMixin
 from asQ.allatonce.function import time_average
+from functools import reduce
+from operator import mul
 
 __all__ = ['AllAtOnceJacobian']
 
@@ -98,7 +100,10 @@ class AllAtOnceJacobian(TimePartitionMixin):
             raise ValueError("AllAtOnceJacobian must be provided a reference state to use \'reference\' for aaos_jacobian_state.")
 
         # Also need a non mat-free for the patch preconditioner
+        
+        # self.global_form = fd.derivative(aaoform.global_form, aaofunc.global_function)
         self.mat = fd.assemble(self.form, bcs=self.bcs).petscmat
+        # PETSc.Sys.Print(f"Size J: {self.mat.getSize()}, with ownership ranges: {self.mat.getOwnershipRanges()}")
 
         self.update()
 
