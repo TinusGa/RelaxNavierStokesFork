@@ -101,9 +101,9 @@ class AllAtOnceJacobian(TimePartitionMixin):
 
         # Also need a non mat-free for the patch preconditioner
         
-        # self.global_form = fd.derivative(aaoform.global_form, aaofunc.global_function)
+        
         self.mat = fd.assemble(self.form, bcs=self.bcs).petscmat
-        # PETSc.Sys.Print(f"Size J: {self.mat.getSize()}, with ownership ranges: {self.mat.getOwnershipRanges()}")
+        self.prevmat = fd.assemble(self.form_prev).petscmat if self._useprev else None
 
         self.update()
 
