@@ -17,7 +17,7 @@ class ProblemParameters:
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
         self.Mbase = 9 # Number of spatial points in base mesh
-        self.Mref = 1 # Number of refinements in the mesh hierarchy
+        self.Mref = 0 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
@@ -29,7 +29,7 @@ parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [4,4,4,4]
+time_partition = [3,3,3,3]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -139,7 +139,7 @@ mg_levels_parameters = {'ksp_type': 'chebyshev',
                         'ksp_max_it': 2,
                         'ksp_convergence_test': 'skip',
                         'pc_type': 'python',
-                        'pc_python_type': 'CyclicReduction.CyclicReductionPC4',
+                        'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
                         'cr_opts': patch_parameters
                         }
 

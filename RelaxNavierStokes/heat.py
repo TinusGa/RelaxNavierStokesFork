@@ -16,12 +16,11 @@ class parameters:
         self.dt = 0.001 #Specified instead of end time
         self.M = 9
         self.Mbase = 9
-        self.Mref = 1
+        self.Mref = 0
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = True
         self.solver = None
-
 
 # Solve the heat equation with timings
 def heat(para=parameters):
