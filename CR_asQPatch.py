@@ -16,7 +16,7 @@ class ProblemParameters:
         self.N = 3 # Number of time steps
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
-        self.Mbase = 4 # Number of spatial points in base mesh
+        self.Mbase = 9 # Number of spatial points in base mesh
         self.Mref = 1 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
@@ -29,7 +29,7 @@ parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [6]
+time_partition = [4,4,4,4]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -129,7 +129,7 @@ aaoform = AllAtOnceForm(aaofunc,
                         bcs=bcs)
 
 #Set up solver parameters
-cr_parameters = {'patch_type': 'star',
+patch_parameters = {'patch_type': 'star',
                  'construct_dim': 0, 
                  'mat_ordering_type': 'natural',
                 }
@@ -139,8 +139,8 @@ mg_levels_parameters = {'ksp_type': 'chebyshev',
                         'ksp_max_it': 2,
                         'ksp_convergence_test': 'skip',
                         'pc_type': 'python',
-                        'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
-                        'cr_opts': cr_parameters
+                        'pc_python_type': 'CyclicReduction.CyclicReductionPC4',
+                        'cr_opts': patch_parameters
                         }
 
 solver_parameters = {'snes_type': 'ksponly',

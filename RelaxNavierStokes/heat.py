@@ -6,14 +6,16 @@ finite elements
 from firedrake import *
 import matplotlib.pylab as plt
 from time import time
+import warnings
+warnings.simplefilter("ignore", FutureWarning)
 
 #Problem parameters used if running this script
 class parameters:
     def __init__(self):
-        self.N = 6
+        self.N = 16
         self.dt = 0.001 #Specified instead of end time
         self.M = 9
-        self.Mbase = 4
+        self.Mbase = 9
         self.Mref = 1
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
@@ -66,7 +68,6 @@ def heat(para=parameters):
     F_ic = 0.5*(u-u0)*phi*ds_b
 
     F = F_space + F_time + F_ic
-    print(type(F))
 
     #Set up solver
     if para.solver=='lu':
@@ -113,8 +114,8 @@ def heat(para=parameters):
 
     iterations = solver.snes.getLinearSolveIterations()
 
-    print('iterations', iterations)
-    print('time taken: ', end-start_solve)
+    PETSc.Sys.Print('iterations', iterations)
+    PETSc.Sys.Print('time taken: ', end-start_solve)
     #Get number of nonzero entries
     A, P = solver.snes.ksp.getOperators()
     nnz = int(A.getInfo()['nz_allocated'])
@@ -135,4 +136,4 @@ def heat(para=parameters):
     return out
 
 if __name__=="__main__":
-    print(heat(parameters()))
+    PETSc.Sys.Print(heat(parameters()))
