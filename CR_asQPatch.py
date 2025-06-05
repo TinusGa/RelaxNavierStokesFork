@@ -16,7 +16,7 @@ class ProblemParameters:
         self.N = 3 # Number of time steps
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
-        self.Mbase = 9 # Number of spatial points in base mesh
+        self.Mbase = 4 # Number of spatial points in base mesh
         self.Mref = 0 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
@@ -29,7 +29,7 @@ parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
 time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [3,3,3,3]
+time_partition = [3,3]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
