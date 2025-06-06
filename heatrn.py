@@ -12,7 +12,7 @@ warnings.simplefilter("ignore", FutureWarning)
 #Problem parameters used if running this script
 class ProblemParameters:
     def __init__(self):
-        self.N = 8
+        self.N = 16
         self.dt = 0.001 #Specified instead of end time
         self.M = 9
         self.degree = {'space': 2,

@@ -22,7 +22,7 @@ class ProblemParameters:
 parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
-time_partition = [8]
+time_partition = [4,4,4,4]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -38,7 +38,7 @@ U = FunctionSpace(mesh,space_element)
 x, y = SpatialCoordinate(U.mesh())
 u0 = Function(U)
 
-u0.project(cos(pi*x)*cos(2*pi*y))
+u0.interpolate(cos(pi*x)*cos(2*pi*y))
 bcs = []
 # u0.project(sin(0.25*pi*x)*cos(2*pi*y))
 # bcs = [DirichletBC(U, 0, sub_domain=1)]
@@ -74,7 +74,7 @@ solver_parameters = {'snes_type': 'ksponly',
                      'ksp_rtol': 1e-6,
                      'ksp_atol': 1e-6,
                      'pc_type': 'python',
-                     'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
+                     'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC',
                      'cr_opts': patch_parameters
                     }
 
