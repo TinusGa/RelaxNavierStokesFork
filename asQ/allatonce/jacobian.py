@@ -100,8 +100,6 @@ class AllAtOnceJacobian(TimePartitionMixin):
             raise ValueError("AllAtOnceJacobian must be provided a reference state to use \'reference\' for aaos_jacobian_state.")
 
         # Also need a non mat-free for the patch preconditioner
-        
-        
         self.mat = fd.assemble(self.form, bcs=self.bcs).petscmat
         self.prevmat = fd.assemble(self.form_prev).petscmat if self._useprev else None
 

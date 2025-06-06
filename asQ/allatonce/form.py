@@ -64,7 +64,6 @@ class AllAtOnceForm(TimePartitionMixin):
                                      aaofunc.field_function_space.dual())
 
         self.form = self._construct_form()
-        # self.global_form = self._construct_global_form()
 
     def time_update(self, t=None):
         """
@@ -226,67 +225,5 @@ class AllAtOnceForm(TimePartitionMixin):
             form += theta*form_function(*un1s, *vs, self.time[n])
             form += (1.0 - theta)*form_function(*uns, *vs, self.time[n]-dt)
 
-        return form
-    
-    def _construct_global_form(self):
-        """
-        Constructs the global form for the all at once system.
-        This is a wrapper around _construct_form that returns
-        a global form instead of a local one.
-        """
-        """
-        Constructs the (possibly nonlinear) form for the all at once system.
-        Specific to the implicit theta-method (trapezium rule version).
-        """
-        aaofunc = self.aaofunc
-        # global_function = aaofunc.global_function
-
-        funcs = fd.split(aaofunc.global_function)
-
-        ics = fd.split(aaofunc.initial_condition)
-        uprevs = fd.split(aaofunc.uprev)
-
-        form_mass = self.form_mass
-        form_function = self.form_function
-
-        test_funcs = fd.TestFunctions(aaofunc.global_function_space)
-
-        dt = self.dt
-        theta = self.theta
-
-        def get_components(i, funcs=None):
-            return tuple(funcs[j] for j in aaofunc._component_indices(i))
-
-        get_step = partial(get_components, funcs=funcs)
-        get_test = partial(get_components, funcs=test_funcs)
-
-        for n in range(self.ntimesteps):
-            if self.layout.is_local(n):
-                n = self.aaofunc.transform_index(n, from_range='window', to_range='slice')
-
-                if n == 0:  # previous timestep is ic or is on previous slice
-                    if self.time_rank == 0:
-                        uns = ics
-                        if self.alpha is not None:
-                            uns = tuple(un + self.alpha*up for un, up in zip(uns, uprevs))
-                    else:
-                        uns = uprevs
-                else:
-                    uns = get_step(n-1)
-
-                # current time level
-                un1s = get_step(n)
-                vs = get_test(n)
-
-                # time derivative
-                if n == 0:
-                    form = (1.0/dt)*form_mass(*un1s, *vs)
-                else:
-                    form += (1.0/dt)*form_mass(*un1s, *vs)
-                form -= (1.0/dt)*form_mass(*uns, *vs)
-
-                # vector field
-                form += theta*form_function(*un1s, *vs, self.time[n])
-                form += (1.0 - theta)*form_function(*uns, *vs, self.time[n]-dt)
         return form
         

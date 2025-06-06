@@ -22,7 +22,7 @@ from asQ import (
 )
 
 
-__all__ = ['CyclicReductionPC3','ApproxCyclicReductionPC3','asQMGPC']
+__all__ = ['CyclicReductionPC3','ApproxCyclicReductionPC3','asQMGPC', 'DirectSolvePC']
 
 def order_points(mesh_dm, points, ordering_type, prefix):
     '''Order the points (topological entities) of a patch based
@@ -130,8 +130,8 @@ class asQMGPC(AllAtOnceBlockPCBase):
         self.solvers = []
         self.corrections = []
 
-        # Create AllAtOnce objects for each function space in the hierarchy
-        for V, bcs in zip(self.function_spaces,self.bcs_list):
+        # Create AllAtOnce objects for each function space in the hierarchy, except the coarsest one
+        for V, bcs in zip(self.function_spaces[1:],self.bcs_list[1:]):
 
             u = AllAtOnceFunction(self.ensemble, self.time_partition, V)
             r = AllAtOnceCofunction(self.ensemble, self.time_partition, u.field_function_space.dual())
@@ -159,22 +159,27 @@ class asQMGPC(AllAtOnceBlockPCBase):
         # Transfer manager for restriction and prolongation
         self.tm = fd.TransferManager(use_averaging=False)
 
-        # coarse_parameters = {'ksp_type': 'preonly',
-        #                      'pc_type': 'python',
-        #                      'pc_python_type': 'CyclicReduction.CyclicReductionPC',}
-        # coarse_prefix = 'coarse_'
-        # V_c, bcs_c = self.function_spaces[-1], self.bcs_list[-1]
-        # u = AllAtOnceFunction(self.ensemble, self.time_partition, V_c)
-        # r = AllAtOnceCofunction(self.ensemble, self.time_partition, u.field_function_space.dual())
-        # form = AllAtOnceForm(u, self.dt, self.theta,
-        #                         self.form_mass, self.form_function,
-        #                         bcs=bcs_c)  
-        # self.coarse_solver = LinearSolver(form, solver_parameters=coarse_parameters, 
-        #                         options_prefix=coarse_prefix)
-    
+        # Set-up the coarse solver
+        coarse_parameters = {'ksp_type': 'preonly',
+                             'pc_type': 'python',
+                             'pc_python_type': 'CyclicReduction.CyclicReductionPC',}
+        coarse_prefix = 'coarse_'
+
+        V_c, bcs_c = self.function_spaces[-1], self.bcs_list[-1]
+        u = AllAtOnceFunction(self.ensemble, self.time_partition, V_c)
+        r = AllAtOnceCofunction(self.ensemble, self.time_partition, u.field_function_space.dual())
+        form = AllAtOnceForm(u, self.dt, self.theta,
+                                self.form_mass, self.form_function,
+                                bcs=bcs_c)  
+        solver = LinearSolver(form, solver_parameters=coarse_parameters, 
+                                options_prefix=coarse_prefix)
+        self.us.append(u)  
+        self.rs.append(r)
+        self.forms.append(form)
+        self.solvers.append(solver)
+        self.corrections.append(u.copy())
 
         self.initialized = True
-        PETSc.Sys.Print(f"asQMGPC initialized in {time() - start:.2f} seconds")
 
     def _record_diagnostics(self):
         pass
@@ -185,13 +190,6 @@ class asQMGPC(AllAtOnceBlockPCBase):
     
     @profiler()
     def apply_impl(self, pc, x, y):
-        # Might need to move the v-cycle here
-        # No, we can solve in initialize and just pass the solution to the apply function
-        # y.assign(self.somesolution) for example
-        # x is the residual AllAtOnceCofunction
-        # y is the solution AllAtOnceFunction
-        # use these for the MG solve
-
         u_fine = self.us[0]  
         r_fine = self.rs[0]  
 
@@ -217,9 +215,7 @@ class asQMGPC(AllAtOnceBlockPCBase):
         
         # Coarsest solve
         solver = self.solvers[-1]
-        # solver = self.coarse_solver
         solver.solve(r_fine, u_fine)
-
 
         u_coarse = u_fine
         r_coarse = r_fine
@@ -268,10 +264,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             self.prevmat.setUp()
             self.prevmat.setValue(0, 0, 0)
             self.prevmat.assemble()
-        
-        # PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}. self mat size : {self.mat.getSize()}, ownership ranges: {self.mat.getOwnershipRanges()}. rows, cols {self.mat.getOwnershipRange(),self.mat.getOwnershipRangeColumn()}",comm=fd.COMM_SELF)
-        # PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}. self prevmat size : {self.prevmat.getSize()}, ownership ranges: {self.prevmat.getOwnershipRanges()}. rows, cols {self.prevmat.getOwnershipRange(),self.prevmat.getOwnershipRangeColumn()}",comm=fd.COMM_SELF)
-        
+                
         # The function space for the time-slice
         self.function_space = self.aaofunc.function_space 
         self.field_function_space = self.aaofunc.field_function_space
@@ -298,59 +291,19 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         self.slice_local_isets = list(PETSc.IS().createGeneral(array, comm=fd.COMM_SELF) for array in self.slice_local_arrays)
 
         # We have a dependency in time, which means the indices of the last time-step of each patch 
-        # corresponds to the columns we need to index on the next time-slice.
-        # Therefore, we must communicate. Communication must occur between consecutive temporal ranks which share the same spatial rank.
-        if self.temporal_rank == self.ensemble.ensemble_comm.size - 1: 
-            # Last temporal rank sends nothing, as it has no next rank to communicate with
-            to_send = np.zeros(len(self.slice_local_arrays)//self.nlocal_timesteps) 
-        else: 
-            # Last time-step of each patch
-            to_send = self.keep_every_n(self.slice_local_arrays, self.nlocal_timesteps, self.nlocal_timesteps-1)
+        # corresponds to the columns we need to index on the next time-slice. Normally, we would have to communicate these indices
+        # but due to how asQ builds forms we can just use the field_function_space to get the indices of the patches
 
-        # Ring communication
-        size = self.ensemble.ensemble_comm.size
-        rank = self.ensemble.ensemble_comm.rank
-        dst = (rank+1) % size
-        src = (rank-1) % size
-        
-        # Send and recieve the last time-step of each patch and convert to PETSc IS's
-        to_recv = self.ensemble.ensemble_comm.sendrecv(sendobj=to_send, dest=dst, sendtag=0, source=src, recvtag=0)
-
-        ####################################### THIS BLOCK IS NOT CORRECT #######################################
         if self.temporal_rank > 0:
-            # for i in range(len(to_recv)):
-            #     to_recv[i] = to_recv[i] - self.field_function_space.dim() * (self.nlocal_timesteps - 1)
-            recv_flat = list(item for sublist in to_recv for item in sublist)
-            def find_global_min_max(arrays):
-                arrays = [a for a in arrays if a.size > 0]
-                return np.min([a.min() for a in arrays]), np.max([a.max() for a in arrays])
-            to_recv_min, to_recv_max = min(recv_flat), max(recv_flat)
-
-            PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}. self prevmat size : {self.prevmat.getSize()}, ownership ranges: {self.prevmat.getOwnershipRanges()}. rows, cols {self.prevmat.getOwnershipRange(),self.prevmat.getOwnershipRangeColumn()}",comm=fd.COMM_SELF)
-            PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}. to_recv(min,max): {to_recv_min,to_recv_max}, max-min {to_recv_max-to_recv_min}", comm=fd.COMM_SELF)
             isrows = self.keep_every_n(self.slice_local_isets, self.nlocal_timesteps,0)
-            isrows_indices = list(iset.getIndices() for iset in isrows)
-            isrows_indices = [item for sublist in isrows_indices for item in sublist]  # Flatten the list of indices
-
-            row_min, row_max = min(isrows_indices), max(isrows_indices)
-            PETSc.Sys.Print(f"Rank: {fd.COMM_WORLD.rank}. isrows(min,max): {row_min,row_max}, max-min {row_max-row_min}", comm=fd.COMM_SELF)
-
-
-        # Convert to another numbering
-        to_recv = [PETSc.IS().createGeneral(indices, comm=fd.COMM_SELF) for indices in to_recv]
-        
-        # We need to index the previous' Jacobians contribution (self.prevmat) for the current time-slice.
-        iscols = to_recv
-        if self.temporal_rank != 0: 
-            isrows = self.keep_every_n(self.slice_local_isets, self.nlocal_timesteps,0)
+            field_patches = self.star_pc.get_patches(self.field_function_space)
+            field_lgmap = self.field_function_space.dof_dset.lgmap
+            iscols = list(field_lgmap.applyIS(iset) for iset in field_patches)
         else:
-            # First temporal rank has no previous rank to communicate with, and therefore no extra off-diagonal blocks,
-            # but it must still participate in the call to createSubMatrices, so we use the same IS's as the diagonal blocks.
-            isrows = to_recv 
-        
-        # REMOVE THIS SOMETIME!
-        iscols = isrows
-        ##########################################################################################################
+            # Make IS rows and columns with (0,0) as the only entry.
+            isrows = np.zeros(len(self.slice_local_arrays)//self.nlocal_timesteps)
+            isrows = list(PETSc.IS().createGeneral(array, comm=fd.COMM_SELF) for array in isrows)
+            iscols = isrows
 
         # Obtain the diagonal and off-diagonal matrices for the time-slice including communication
         self.diag_mats = self.mat.createSubMatrices(self.slice_local_isets, 
@@ -415,7 +368,6 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             sub_mat = self.diag_mats[i]
             sub_rhs_v = sub_mat.createVecRight()
             sub_sol_v = sub_mat.createVecLeft()
-            # PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}. Subdomain {i} has local size: {sub_rhs_v.getSize()}, global size: {sub_rhs_v.getSize()}, iset size {len(global_is.getIndices())}", comm=fd.COMM_SELF)
             self.sub_rhs_vecs.append(sub_rhs_v)
             self.sub_sol_vecs.append(sub_sol_v)
 
@@ -835,6 +787,111 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             indices = even_indices
 
         return index_list
+
+class DirectSolvePC(AllAtOnceBlockPCBase):
+
+    prefix = 'direct_opts_'
+    valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
+
+    @profiler()
+    def initialize(self,pc):
+        super().initialize(pc, final_initialize=False)
+        self.some_parameters_sent_by_KSP = PETSc.Options(self.full_prefix).getAll()
+
+        # Obtain the time-slice local Jacobian matrix and the contribution from the previous time-slice. self.prevmat is 'None' for temporal rank 0.
+        self.mat = self.jacobian.mat 
+        self.prevmat = self.jacobian.prevmat 
+
+        self.field_function_space = self.aaofunc.field_function_space
+        self.function_space = self.aaofunc.function_space
+
+        self.temporal_rank = self.ensemble.ensemble_comm.rank
+        self.spatial_rank = self.ensemble.comm.rank
+    
+    @profiler()
+    def apply_impl(self, pc, x, y):
+        with x.global_vec_ro() as xvec, y.global_vec_wo() as yvec:
+            # if self.prevmat is None:
+                # F = self.get_factored_matrix(self.mat, self.function_space.mesh().comm)
+                # F.solve(xvec, yvec)
+            PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}. self.mat size : {self.mat.getSize()}, ownership range: {self.mat.getOwnershipRange()}",comm=fd.COMM_SELF)
+            PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}. xvec,yvec size {xvec.getSize(),yvec.getSize()}, with ranges {xvec.getOwnershipRange(),yvec.getOwnershipRange()} ",comm=fd.COMM_SELF)
+            # else:
+            #     y.update_time_halos(blocking=True)
+            #     F = self.get_factored_matrix(self.prevmat, self.ensemble.comm)
+            #     rhs = xvec.duplicate()
+
+
+
+            
+        
+        y.update_time_halos(blocking=True)
+        y.uprev # Prev time-step contribution, if any.
+
+        PETSc.Sys.Print(f"apply in DIRECTSOLVEPC")
+
+        with y.global_vec_wo() as yvec:
+            # yvec is a PETSc Vec. Solution
+            yvec.set(0.0)
+            pass
+    
+    @profiler()
+    def get_factored_matrix(self, A, comm):
+        """
+        Factor a matrix using LU decomposition with MUMPS.
+
+        This function creates a PETSc preconditioner (PC) object configured to
+        perform LU factorization using the MUMPS solver. It sets the provided
+        matrix `A` as the operator and configures solver parameters to enhance
+        numerical stability and suppress MUMPS-specific output. The factored
+        matrix is then returned, allowing reuse in subsequent solves.
+
+        Parameters
+        ----------
+        A : PETSc.Mat
+            The matrix to factor. Must be assembled, square and either of type MPIAIJ or MPIDENSE.
+        comm : PETSc.Comm
+            The MPI communicator over which to create the PETSc PC.
+
+        Returns
+        -------
+        PETSc.Mat
+            The LU-factored matrix configured with MUMPS.
+
+        Notes
+        -----
+        - This function sets `ICNTL(24) = 1` to improve pivot detection and
+        `ICNTL(13) = 0` to suppress MUMPS output. Both `ICNTL(13) = 1` and
+        `ICNTL(13) = 0` are supported.
+        - The pivot convergence tolerance `CNTL(3)` is set to `1e-7`.
+
+        Examples. Solve Ax = b
+        --------
+        >>> F = get_factored_matrix(A, comm)
+        >>> F.solve(b, x)
+        """
+        local_pc = PETSc.PC().create(comm=comm)
+        local_pc.setType("lu")
+        local_pc.setFactorSolverType("mumps")
+        local_pc.setOperators(A)
+        local_pc.getFactorMatrix().setMumpsIcntl(24, 1)
+        local_pc.getFactorMatrix().setMumpsIcntl(13, 0)
+        local_pc.getFactorMatrix().setMumpsCntl(3, 1e-7)
+        local_pc.setUp()
+        return local_pc.getFactorMatrix()
+    
+    @profiler()
+    def _record_diagnostics(self):
+        pass
+
+    @profiler()
+    def update(self, pc):
+        """
+        No need to update. The method should only be called once per rank.
+        """
+        pass
+
+    
 
 class ApproxCyclicReductionPC3(CyclicReductionPC3):
     """
