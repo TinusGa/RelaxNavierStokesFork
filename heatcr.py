@@ -12,9 +12,9 @@ warnings.simplefilter("ignore", FutureWarning)
 
 class ProblemParameters:
     def __init__(self):
-        self.M = 9 # Number of spatial points
+        self.M = 16 # Number of spatial points
         self.dt = 0.001
-        self.degree = {'space': 2,
+        self.degree = {'space': 1,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
         self.theta = 1 # Theta parameter for the time-stepping scheme
@@ -74,7 +74,7 @@ solver_parameters = {'snes_type': 'ksponly',
                      'ksp_rtol': 1e-6,
                      'ksp_atol': 1e-6,
                      'pc_type': 'python',
-                     'pc_python_type': 'CyclicReduction.ApproxCyclicReductionPC',
+                     'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
                      'cr_opts': patch_parameters
                     }
 

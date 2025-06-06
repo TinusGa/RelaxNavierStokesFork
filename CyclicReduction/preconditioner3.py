@@ -250,6 +250,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
     @profiler()
     def initialize(self,pc):
         super().initialize(pc, final_initialize=False)
+        start = time()
         self.patch_parameters = PETSc.Options(self.full_prefix).getAll()
 
         # Obtain the time-slice local Jacobian matrix and the contribution from the previous time-slice. self.prevmat is 'None' for temporal rank 0.
@@ -304,6 +305,10 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             isrows = np.zeros(len(self.slice_local_arrays)//self.nlocal_timesteps)
             isrows = list(PETSc.IS().createGeneral(array, comm=fd.COMM_SELF) for array in isrows)
             iscols = isrows
+        
+        PETSc.Sys.Print(f"Time to set-up isets: {time()-start:.2f}s")
+
+        start = time()
 
         # Obtain the diagonal and off-diagonal matrices for the time-slice including communication
         self.diag_mats = self.mat.createSubMatrices(self.slice_local_isets, 
@@ -323,9 +328,12 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Factor the diagonal matrices for the diagonal solve version of apply_impl
         self.factored_diag_mats = list(self.get_factored_matrix(mat, comm=fd.COMM_SELF) for mat in self.diag_mats)
         
+        PETSc.Sys.Print(f"Time to set-up submats: {time()-start:.2f}s")
+
         #-----------------------------------------------
         # Scatters for apply_impl
         #-----------------------------------------------
+        start = time()
 
         # In apply_impl we will work with the global indices of the patches,
         # therefore we must shift the indices of the IS's to global numbering.
@@ -382,7 +390,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
             # For scatter from sub_sol_v to master_sol_vec (used in REVERSE)
             self.scatters_sub_sol_to_master.append(sc_master_to_sub) # We reuse the same scatter object
-        
+        PETSc.Sys.Print(f"Time to set-up scatters: {time()-start:.2f}s")
         self.initialized = True
 
     def reshape_list(self, data, rows, cols):
@@ -456,7 +464,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         pass
 
     @profiler()
-    def apply_impl(self, pc, x, y):
+    def apply_impl_1(self, pc, x, y):
         """
         Test apply_impl, using only the main diag and doing a simple solve, like PCASM
         To ensure that the patch distribution is correct, and initialize does what it should.
@@ -494,7 +502,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             self.scatter_master_to_y.scatter(self.master_sol_vec, yvec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.FORWARD) # This scatter is defined from master to global.
 
     @profiler()
-    def apply_impl_1(self, pc, x, y):
+    def apply_impl(self, pc, x, y):
         """
         Custom additive Schwarz-style preconditioner:
         - Assumes self.patches: tuple of PETSc IS (global indices for patches)
