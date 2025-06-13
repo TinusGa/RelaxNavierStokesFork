@@ -12,7 +12,7 @@ from asQ.pencil import Pencil, Subcomm
 from asQ.profiling import profiler
 from asQ.preconditioners.base import AllAtOnceBlockPCBase
 from asQ.parallel_arrays import SharedArray
-from asQ.allatonce import LinearSolver
+from asQ.allatonce import LinearSolver, time_average
 
 from asQ import (
     AllAtOnceFunction,
@@ -50,6 +50,99 @@ def order_points(mesh_dm, points, ordering_type, prefix):
     rperm.destroy()
     cperm.destroy()
     return indices
+
+def order_points_vanka(mesh_dm, points, ordering_type, prefix):
+    '''Order a the points (topological entities) of a patch based on the adjacency graph of the mesh.
+    :arg mesh_dm: the `mesh.topology_dm`
+    :arg points: array with point indices forming the patch
+    :arg ordering_type: a `PETSc.Mat.OrderingType`
+    :arg prefix: the prefix associated with additional ordering options
+    :returns: the permuted array of points                                                                        
+    '''
+    if ordering_type == "natural":
+        return points
+    subgraph = [numpy.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
+    ia = numpy.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
+    ja = numpy.concatenate(subgraph).astype(PETSc.IntType)
+    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, numpy.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
+    A.setOptionsPrefix(prefix)
+    rperm, _ = A.getOrdering(ordering_type)
+    A.destroy()
+    return points[rperm.getIndices()]
+
+class ASMVankaStarPC(ASMPatchPC):
+    '''Patch-based PC using closure of star of mesh entities implemented as an
+    :class:`ASMPatchPC`.
+    ASMVankaStarPC is an additive Schwarz preconditioner where each patch
+    consists of all DoFs on the closure of the star of the mesh entity
+    specified by `pc_vanka_construct_dim` (or codim).
+    This version includes the star of the "exclude_subfunctions" in the patch
+    '''
+
+    _prefix = "pc_vankastar_"
+
+    def get_patches(self, V):
+        mesh = V._mesh
+        mesh_dm = mesh.topology_dm
+        if mesh.layers:
+            warning("applying ASMVankaPC on an extruded mesh")
+        
+        # Obtain the topological entities to use to construct the stars
+        depth = PETSc.Options().getInt(self.prefix + "construct_dim", default=-1)
+        height = PETSc.Options().getInt(self.prefix + "construct_codim", default=-1)
+        if (depth == -1 and height == -1) or (depth != -1 and height != -1):
+            raise ValueError(f"Must set exactly one of {self.prefix}construct_dim or {self.prefix}construct_codim")
+
+        exclude_subfunctions = [int(subspace) for subspace in PETSc.Options().getString(self.prefix+"exclude_subfunctions", default="-1").split(",")]
+        ordering = PETSc.Options().getString(self.prefix+"mat_ordering_type", default="natural")
+        # Accessing .indices causes the allocation of a global array,
+        # so we need to cache these for efficiency
+        V_local_ises_indices = []
+        for (i, W) in enumerate(V):
+            V_local_ises_indices.append(V.dof_dset.local_ises[i].indices)
+
+        # Build index sets for the patches
+        ises = []
+        if depth != -1:
+            (start, end) = mesh_dm.getDepthStratum(depth)
+        else:
+            (start, end) = mesh_dm.getHeightStratum(height)
+
+        for seed in range(start, end):
+            # Only build patches over owned DoFs
+            if mesh_dm.getLabelValue("pyop2_ghost", seed) != -1:
+                continue
+
+            # Create point list from mesh DM
+            star, _ = mesh_dm.getTransitiveClosure(seed, useCone=False)
+            pt_array_star = order_points_vanka(mesh_dm, star, ordering, self.prefix)
+            
+            pt_array_vanka = set()
+            for pt in star.tolist():
+                closure, _ = mesh_dm.getTransitiveClosure(pt, useCone=True)
+                pt_array_vanka.update(closure.tolist())
+
+            pt_array_vanka = order_points_vanka(mesh_dm, pt_array_vanka, ordering, self.prefix)
+            # Get DoF indices for patch
+            indices = []
+            for (i, W) in enumerate(V):
+                section = W.dm.getDefaultSection()
+                if i in exclude_subfunctions:
+                    loop_list = pt_array_star
+                else:
+                    loop_list = pt_array_vanka
+                for p in loop_list:
+                    dof = section.getDof(p)
+                    if dof <= 0:
+                        continue
+                    off = section.getOffset(p)
+                    # Local indices within W
+                    W_indices = slice(off*W.value_size, W.value_size * (off + dof))
+                    indices.extend(V_local_ises_indices[i][W_indices])
+            iset = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
+            ises.append(iset)
+
+        return ises
 
 class ASMStarPC(ASMPatchPC):
     '''Patch-based PC using Star of mesh entities implmented as an
@@ -113,6 +206,8 @@ class asQMGPC(AllAtOnceBlockPCBase):
         start = time()
         pc.setOptionsPrefix('asQMGPC_')
         super().initialize(pc, final_initialize=False)
+
+        self.jacobian_state = self.jacobian.jacobian_state
         
         self.sub_solver_parameters = PETSc.Options(self.full_prefix).getAll()
 
@@ -160,9 +255,16 @@ class asQMGPC(AllAtOnceBlockPCBase):
         self.tm = fd.TransferManager(use_averaging=False)
 
         # Set-up the coarse solver
-        coarse_parameters = {'ksp_type': 'preonly',
-                             'pc_type': 'python',
-                             'pc_python_type': 'CyclicReduction.CyclicReductionPC',}
+        coarse_parameters = {
+            'snes_type': 'ksponly',
+            'mat_type': 'matfree',
+            'ksp_type': 'richardson',
+            'ksp_rtol': 1e-12,
+            'pc_type': 'python',
+            'pc_python_type': 'asQ.CirculantPC',
+            'circulant_block': {'pc_type': 'lu'},
+            'circulant_alpha': 1e-4}
+
         coarse_prefix = 'coarse_'
 
         V_c, bcs_c = self.function_spaces[-1], self.bcs_list[-1]
@@ -186,8 +288,16 @@ class asQMGPC(AllAtOnceBlockPCBase):
     
     @profiler()
     def update(self, pc):
-        pass
-    
+        # We need to ping the LinearSolvers to have them update their Jacobian based on the current state,
+        # i.e. we need this update() to trigger the update() in CyclicReductionPC3
+        PETSc.Sys.Print("Updating in asQMGPC")
+        for solver in self.solvers:
+            solverPC = solver.ksp.getPC()
+            pcctx = solverPC.getPythonContext()
+            # Add the jacobian state to the appctx
+            pcctx.jac_state = self.jacobian_state
+            pcctx.setUp(solverPC)
+
     @profiler()
     def apply_impl(self, pc, x, y):
         u_fine = self.us[0]  
@@ -256,6 +366,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Obtain the time-slice local Jacobian matrix and the contribution from the previous time-slice. self.prevmat is 'None' for temporal rank 0.
         self.mat = self.jacobian.mat 
         self.prevmat = self.jacobian.prevmat 
+        self.state_func = self.aaofunc.copy()
 
         # We have to cheese the system here a bit as all ranks must have a prevmat.
         if self.prevmat is None:
@@ -277,7 +388,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Initialize the desired patch PC. 
         # TODO: Currently only supports 'star' patch type. Should make this dynamic through e.g. appctx.
         self.star_pc = ASMStarPC()
-        self.star_pc.prefix = 'star'
+        self.star_pc.prefix = self.full_prefix
 
         # Get patch IS in rank local numbering, split each into nlocal_timesteps
         rank_local_isets = self.star_pc.get_patches(self.function_space)
@@ -296,15 +407,15 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # but due to how asQ builds forms we can just use the field_function_space to get the indices of the patches
 
         if self.temporal_rank > 0:
-            isrows = self.keep_every_n(self.slice_local_isets, self.nlocal_timesteps,0)
+            self.isrows = self.keep_every_n(self.slice_local_isets, self.nlocal_timesteps,0)
             field_patches = self.star_pc.get_patches(self.field_function_space)
             field_lgmap = self.field_function_space.dof_dset.lgmap
-            iscols = list(field_lgmap.applyIS(iset) for iset in field_patches)
+            self.iscols = list(field_lgmap.applyIS(iset) for iset in field_patches)
         else:
             # Make IS rows and columns with (0,0) as the only entry.
-            isrows = np.zeros(len(self.slice_local_arrays)//self.nlocal_timesteps)
-            isrows = list(PETSc.IS().createGeneral(array, comm=fd.COMM_SELF) for array in isrows)
-            iscols = isrows
+            self.isrows = np.zeros(len(self.slice_local_arrays)//self.nlocal_timesteps)
+            self.isrows = list(PETSc.IS().createGeneral(array, comm=fd.COMM_SELF) for array in self.isrows)
+            self.iscols = self.isrows
         
         PETSc.Sys.Print(f"Time to set-up isets: {time()-start:.2f}s")
 
@@ -315,8 +426,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
                                                     self.slice_local_isets)
         self.offdiag_mats = self.mat.createSubMatrices(self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, 0),
                                                        self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, self.nlocal_timesteps-1))
-        self.prev_offdiag_mats = self.prevmat.createSubMatrices(isrows, 
-                                                                iscols) 
+        self.prev_offdiag_mats = self.prevmat.createSubMatrices(self.isrows, 
+                                                                self.iscols) 
         
         # We reshape for easier insert, then reshape back to the original structure
         self.offdiag_mats = self.reshape_list(self.offdiag_mats, len(self.offdiag_mats)//(self.nlocal_timesteps-1), self.nlocal_timesteps-1)
@@ -416,7 +527,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         Shift the indices of a PETSc IS by a given amount.
         """
         new_indices = iset.getIndices() + shift
-        iset.destroy()  # Destroy the old IS to free memory
+        # iset.destroy()  # Destroy the old IS to free memory
         return PETSc.IS().createGeneral(new_indices, comm=comm)
     
     def splitIS(self, iset, n, comm=fd.COMM_SELF):
@@ -455,13 +566,78 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
     @profiler()
     def _record_diagnostics(self):
         pass
-
+    
     @profiler()
     def update(self, pc):
         """
-        No need to update. The method should only be called once per rank.
+        Update the state to linearise around according to aaojacobi_state.
         """
-        pass
+        PETSc.Sys.Print(f"Update called in CRPC3")
+
+        aaofunc = self.aaofunc
+        aaoform = self.aaoform
+        state_func = self.state_func
+        jacobian_state = self.jac_state
+        jacobian_state = 'initial'
+
+        # for st, ft in zip(self.time, aaoform.time):
+        #     st.assign(ft)
+
+        # if jacobian_state == 'linear':
+        #     return
+
+        # elif jacobian_state == 'current':
+        #     state_func.assign(aaofunc)
+
+        # elif jacobian_state in ('window', 'slice'):
+        #     time_average(aaofunc, state_func.initial_condition,
+        #                  state_func.uprev, average=jacobian_state)
+        #     state_func.assign(state_func.initial_condition)
+
+        #     for t in self.time:
+        #         if jacobian_state == 'window':
+        #             t.assign(aaoform.t0 + self.dt*(self.ntimesteps + 1)/2)
+        #         elif jacobian_state == 'slice':
+        #             i1 = aaofunc.transform_index(0, from_range='slice',
+        #                                          to_range='window')
+        #             t1 = aaoform.t0 + i1*self.dt
+        #             t.assign(t1 + self.dt*(self.nlocal_timesteps + 1)/2)
+
+        # elif jacobian_state == 'initial':
+        #     state_func.assign(aaofunc.initial_condition)
+        #     for t in self.time:
+        #         t.assign(self.aaoform.t0)
+
+        # elif jacobian_state == 'reference':
+        #     aaofunc.assign(self.jacobian.reference_state)
+
+        # elif jacobian_state == 'user':
+        #     pass
+
+        aaofunc.update_time_halos()
+
+        # Recompute the Jacobian matrices with the updated state
+        self.mat = fd.assemble(self.jacobian.form, bcs=self.jacobian.bcs).petscmat
+        self.prevmat = fd.assemble(self.jacobian.form_prev).petscmat if self.jacobian._useprev else self.prevmat
+
+        self.diag_mats = self.mat.createSubMatrices(self.slice_local_isets, 
+                                                    self.slice_local_isets)
+        self.offdiag_mats = self.mat.createSubMatrices(self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, 0),
+                                                       self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, self.nlocal_timesteps-1))
+        self.prev_offdiag_mats = self.prevmat.createSubMatrices(self.isrows, 
+                                                                self.iscols)
+        
+        # We reshape for easier insert, then reshape back to the original structure
+        self.offdiag_mats = self.reshape_list(self.offdiag_mats, len(self.offdiag_mats)//(self.nlocal_timesteps-1), self.nlocal_timesteps-1)
+        for i, prev_offdiag_mat in enumerate(self.prev_offdiag_mats):
+            self.offdiag_mats[i].insert(0, prev_offdiag_mat)
+        
+        self.offdiag_mats = list(mat for mat_list in self.offdiag_mats for mat in mat_list)
+
+        # Factor the diagonal matrices for the diagonal solve version of apply_impl
+        self.factored_diag_mats = list(self.get_factored_matrix(mat, comm=fd.COMM_SELF) for mat in self.diag_mats)
+
+        return
 
     @profiler()
     def apply_impl_1(self, pc, x, y):

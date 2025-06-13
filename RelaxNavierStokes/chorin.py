@@ -52,6 +52,8 @@ def chorin(para=parameters):
     #Define initial condition
     x, y, t = SpatialCoordinate(Z.mesh())
 
+    PETSc.Sys.Print("type(t) = ", type(t))
+
     z0 = Function(Z)
     u0, p0 = z0.subfunctions
     

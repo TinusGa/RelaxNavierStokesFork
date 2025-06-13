@@ -75,8 +75,6 @@ class AllAtOnceFunctionBase(TimePartitionMixin):
         # this will be renamed either self.function or self.cofunction
         self._fbuf = fd.Function(self.function_space)
 
-        self.global_function = fd.Function(self.global_function_space)
-
         # Functions to view each timestep
         def field_function(i):
             if self.ncomponents == 1:
@@ -102,6 +100,7 @@ class AllAtOnceFunctionBase(TimePartitionMixin):
 
         with self._fbuf.dat.vec as fvec:
             sizes = (self.nlocal_dofs, self.nglobal_dofs)
+            # PETSc.Sys.Print(f"Rank {fd.COMM_WORLD.rank}, creating global Vec with sizes {sizes}",comm=fd.COMM_SELF)
             self._vec = PETSc.Vec().createWithArray(fvec.array,
                                                     size=sizes,
                                                     comm=ensemble.global_comm)

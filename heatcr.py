@@ -12,7 +12,7 @@ warnings.simplefilter("ignore", FutureWarning)
 
 class ProblemParameters:
     def __init__(self):
-        self.M = 16 # Number of spatial points
+        self.M = 4 # Number of spatial points
         self.dt = 0.001
         self.degree = {'space': 1,
                        'time': 0} # DG degree 0 gives backward Euler
@@ -22,7 +22,7 @@ class ProblemParameters:
 parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
-time_partition = [4,4,4,4]
+time_partition = [4,4]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh

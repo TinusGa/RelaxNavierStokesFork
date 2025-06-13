@@ -107,6 +107,7 @@ class AllAtOnceJacobian(TimePartitionMixin):
 
     @profiler()
     def update(self, X=None):
+        PETSc.Sys.Print(f"UPDATE in AllAtOnceJacobian")
         """
         Update the state to linearise around according to aaos_jacobian_state.
 
@@ -147,6 +148,7 @@ class AllAtOnceJacobian(TimePartitionMixin):
         :arg X: a PETSc Vec to apply the action on.
         :arg Y: a PETSc Vec for the result.
         """
+        # PETSc.Sys.Print(f"MULT")
         # we could use nonblocking here and overlap comms with assembling form
         self.x.assign(X, update_halos=True, blocking=True)
 

@@ -17,7 +17,7 @@ class ProblemParameters:
         self.dt = 0.001 # Specified instead of end time
         self.M = 9 # Number of spatial points
         self.Mbase = 4 # Number of spatial points in base mesh
-        self.Mref = 1 # Number of refinements in the mesh hierarchy
+        self.Mref = 2 # Number of refinements in the mesh hierarchy
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = False
@@ -28,16 +28,13 @@ class ProblemParameters:
 parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
-time_partition = create_time_partition(parameters.N-1, parameters.Pt)
-time_partition = [4,4]
+time_partition = [4,4,4,4]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
 distribution_parameters={"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
-
 base_mesh = UnitSquareMesh(nx = parameters.Mbase, ny = parameters.Mbase,
                            distribution_parameters=distribution_parameters,comm = ensemble.comm)
-
 mesh_hierarchy = MeshHierarchy(base_mesh,parameters.Mref)
 
 
@@ -80,43 +77,6 @@ def form_mass(u, v):
 def form_function(u, v, t):
     return inner(grad(u), grad(v))*dx
 
-def mat_from_mesh():
-    mesh = UnitSquareMesh(nx = parameters.Mbase, ny = parameters.Mbase,
-                           distribution_parameters=distribution_parameters)
-    extruded_mesh = ExtrudedMesh(mesh, layers=sum(time_partition), layer_height=parameters.dt,
-                                extrusion_type='uniform')
-    n = FacetNormal(extruded_mesh)
-
-    #Define function space
-    space_element = FiniteElement("CG", triangle, parameters.degree['space'])
-    time_element = FiniteElement("DG", interval, parameters.degree['time'])
-    spacetime_element = TensorProductElement(space_element,time_element)
-    U = FunctionSpace(extruded_mesh,spacetime_element)
-
-    #Define initial condition
-    x, y, t = SpatialCoordinate(U.mesh())
-    u0 = interpolate(sin(0.25*pi*x)*cos(2*pi*y), U)
-
-    bcs = [DirichletBC(U, 0, sub_domain=1)]
-
-    #Set up residual
-    u = TrialFunction(U)
-    phi = TestFunction(U)
-
-    gradu = as_vector([u.dx(0),
-                        u.dx(1)])
-    gradphi = as_vector([phi.dx(0),
-                            phi.dx(1)])
-    def plus(v):
-        return -0.5*jump(v,n[2]) + avg(v)
-
-    F_space = inner(gradu,gradphi) * dx(degree=16)
-    F_time = u.dx(2) * phi * dx(degree=16) - jump(u,n[2]) * plus(phi) * dS_h(degree=16)
-    F_ic = 0.5*(u-u0)*phi*ds_b
-
-    F = F_space + F_time
-
-    return assemble(F, bcs=bcs).petscmat
 
 aaofunc = AllAtOnceFunction(ensemble, time_partition, U)
 aaofunc.initial_condition.assign(u0)
