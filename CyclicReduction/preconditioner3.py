@@ -575,10 +575,10 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         PETSc.Sys.Print(f"Update called in CRPC3")
 
         aaofunc = self.aaofunc
-        aaoform = self.aaoform
-        state_func = self.state_func
-        jacobian_state = self.jac_state
-        jacobian_state = 'initial'
+        # aaoform = self.aaoform
+        # state_func = self.state_func
+        # jacobian_state = self.jac_state
+        # jacobian_state = 'initial'
 
         # for st, ft in zip(self.time, aaoform.time):
         #     st.assign(ft)
@@ -679,6 +679,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
+        start = time()
         """
         Custom additive Schwarz-style preconditioner:
         - Assumes self.patches: tuple of PETSc IS (global indices for patches)
@@ -716,7 +717,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
                 F = self.factored_diag_mats[i][0]
                 F.solve(self.sub_rhs_vecs[i][0], self.sub_sol_vecs[i][0])
                 u1s.append(self.sub_sol_vecs[i][0].copy())
-
+        
+        time1 = time() - start
         # ---------------------------------------------------------------------------
         # For each patch system, apply forward reduction to get L, D, f
         # ---------------------------------------------------------------------------
@@ -730,6 +732,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         # INTERFACE SOLVE (processor communication)
         # ---------------------------------------------------------------------------
+        start = time()
 
         # Total number of temporal ranks
         n_temporal = self.ensemble.ensemble_comm.size
@@ -769,6 +772,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             u_nexts = [u_next.getArray() for u_next in u_nexts]
             self.ensemble.ensemble_comm.send(u_nexts, dst, 0)
         
+        time2 = time() - start
+        
         # All ranks now own a u_prev and u_next. Most importantly, u_prev for each processor can be used 
         # to solve for all its owning rows of the global system.
 
@@ -777,6 +782,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         for offdiags, factored_diags, rhss, sols, u_prev in zip(self.offdiag_mats, self.factored_diag_mats, self.sub_rhs_vecs, self.sub_sol_vecs, u_prevs):
             self.forward_substitution(offdiags, factored_diags, rhss, sols, u_prev)
+
+        start = time()
               
         self.sub_sol_vecs = list(sol for sublist in self.sub_sol_vecs for sol in sublist)
         self.sub_rhs_vecs = list(rhs for sublist in self.sub_rhs_vecs for rhs in sublist)
@@ -791,6 +798,10 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             yvec.set(0.0)
             self.scatter_master_to_y.scatter(self.master_sol_vec, yvec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.FORWARD) # This scatter is defined from master to global.
         
+        time3 = time() - start
+
+        PETSc.Sys.Print(f"Setup-time and first block solve(s) {time1}. Comm interface {time2}. Insert solution {time3}")
+
     @profiler()
     def forward_reduction(self, lower_diag, main_diag, rhs):
         """
@@ -813,54 +824,79 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         
         # Temporal rank 0 is offset from other ranks by 1
         offset = 1 if self.temporal_rank == 0 else 0
+
+        if len(main_diag) <= 1:
+            return lower_diag[0].copy(), main_diag[0].copy(), rhs[0].copy()
+
+        # Pre-allocate buffers
+        L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
         
-        if len(main_diag) > 1: # This processor owns more than one timestep, so we reduce
-            # Reduce onto these variables. L and D are the lower diagonal and main diagonal
-            # matrices respectively of type 'mpiaij'.
-            L, D, f = lower_diag[offset].copy(), main_diag[offset].copy(), rhs[offset].copy()
-            for i in range(offset + 1, self.nlocal_timesteps):
-                L_next = lower_diag[i].copy()
-                D_next = main_diag[i].copy()
-                f_next = rhs[i].copy()
+        # Matrix-matrix products will be dense, better to convert only once
+        L.convert('dense')
+        L.setUp()
+        L.assemble()
 
-                # Factor using LU decomposition with MUMPS
-                D_factored = self.get_factored_matrix(D, comm=fd.COMM_SELF)
+        D_inv_L = PETSc.Mat().createDense(size=L.getSizes(), comm=fd.COMM_SELF)
+        D_inv_L.setUp()
+        D_inv_L.assemble()
 
-                # Compute L <- L_next * D^{-1} * L, D <- -D_next and f <- L_next * D^{-1} * f - f_next
-                L_dense = L.copy()
-                L_dense.convert('dense')
-                D_inv_L_dense = PETSc.Mat().createDense(size=L_dense.getSizes(), comm=fd.COMM_SELF) # Create a dense matrix for D^{-1} * L
-                D_inv_L_dense.setUp()
-                D_inv_L_dense.assemble()
+        D_inv_f = f.duplicate()
+        
 
-                # Compute L <- L_next * D^{-1} * L
-                D_factored.matSolve(L_dense, D_inv_L_dense) # D^{-1} * L and stores in D_inv_L_dense
-                L.convert('dense') # Convert L to dense matrix
-                L.setUp()
-                L.assemble()
-                L_next.matMult(D_inv_L_dense, L) # L <- L_next * D^{-1} * L
+        for i in range(offset + 1, self.nlocal_timesteps):
+            # Factor using LU decomposition with MUMPS. Factored mat is required for any solve() routine
+            D_factored = self.get_factored_matrix(D, comm=fd.COMM_SELF)
 
-                # Compute D <- - D_next
-                D_next.scale(-1.0) # D_next <- -D_next
-                D = D_next.copy() # D <- D_next
+            L_next, D_next, f_next = lower_diag[i], main_diag[i].copy(), rhs[i].copy()
 
-                # Compute f <- L_next * D^{-1} * f - f_next
-                D_inv_f = f.duplicate()
-                D_factored.solve(f, D_inv_f) # D^{-1} * f
-                f_next.scale(-1.0) # f_next <- -f_next
-                L_next.multAdd(D_inv_f, f_next, f) # f <- L_next * D^{-1} * f - f_next
+            D_factored.matSolve(L, D_inv_L) # D⁻¹ * L and stores the result in D_inv_L
+            L_next.matMult(D_inv_L,L) # L_next * D⁻¹ * L and stores the result in L. L is now correctly updated for the next iteration of reduction
 
-                # Destruction
-                D_factored.destroy()
-                L_dense.destroy()
-                D_inv_L_dense.destroy()
-                D_inv_f.destroy()
+            D_next.scale(-1.0) # D_next <- -D_next
+            D = D_next.copy() # D <- D_next
 
-                L_next.destroy()
-                D_next.destroy()
-                f_next.destroy()
-        else:
-            L, D, f = lower_diag[0].copy(), main_diag[0].copy(), rhs[0].copy()
+            # Compute f <- L_next * D^{-1} * f - f_next
+            D_factored.solve(f, D_inv_f) # D^{-1} * f
+            f_next.scale(-1.0) # f_next <- -f_next
+            L_next.multAdd(D_inv_f, f_next, f) # f <- L_next * D^{-1} * f - f_next
+
+            # L_next = lower_diag[i].copy()
+            # D_next = main_diag[i].copy()
+            # f_next = rhs[i].copy()
+
+            # # Compute L <- L_next * D^{-1} * L, D <- -D_next and f <- L_next * D^{-1} * f - f_next
+            # L_dense = L.copy()
+            # L_dense.convert('dense')
+            # D_inv_L_dense = PETSc.Mat().createDense(size=L_dense.getSizes(), comm=fd.COMM_SELF) # Create a dense matrix for D^{-1} * L
+            # D_inv_L_dense.setUp()
+            # D_inv_L_dense.assemble()
+
+            # # Compute L <- L_next * D^{-1} * L
+            # D_factored.matSolve(L_dense, D_inv_L_dense) # D^{-1} * L and stores in D_inv_L_dense
+            # L.convert('dense') # Convert L to dense matrix
+            # L.setUp()
+            # L.assemble()
+            # L_next.matMult(D_inv_L_dense, L) # L <- L_next * D^{-1} * L
+
+            # # Compute D <- - D_next
+            # D_next.scale(-1.0) # D_next <- -D_next
+            # D = D_next.copy() # D <- D_next
+
+            # # Compute f <- L_next * D^{-1} * f - f_next
+            # D_inv_f = f.duplicate()
+            # D_factored.solve(f, D_inv_f) # D^{-1} * f
+            # f_next.scale(-1.0) # f_next <- -f_next
+            # L_next.multAdd(D_inv_f, f_next, f) # f <- L_next * D^{-1} * f - f_next
+
+            # # Destruction
+            # D_factored.destroy()
+            # L_dense.destroy()
+            # D_inv_L_dense.destroy()
+            # D_inv_f.destroy()
+
+            # L_next.destroy()
+            # D_next.destroy()
+            # f_next.destroy()
                 
         return L, D, f
 

@@ -24,7 +24,7 @@ parameters = ProblemParameters()
 
 # 1. ENSEMBLE and MESH setup
 # ----------------------------------------------------
-time_partition = [2,2,2,2]
+time_partition = [4,4,4,4]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters = {"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
