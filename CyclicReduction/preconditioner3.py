@@ -640,7 +640,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         return
 
     @profiler()
-    def apply_impl_1(self, pc, x, y):
+    def apply_impl(self, pc, x, y):
         """
         Test apply_impl, using only the main diag and doing a simple solve, like PCASM
         To ensure that the patch distribution is correct, and initialize does what it should.
@@ -678,7 +678,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             self.scatter_master_to_y.scatter(self.master_sol_vec, yvec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.FORWARD) # This scatter is defined from master to global.
 
     @profiler()
-    def apply_impl(self, pc, x, y):
+    def apply_impl_1(self, pc, x, y):
         start = time()
         """
         Custom additive Schwarz-style preconditioner:

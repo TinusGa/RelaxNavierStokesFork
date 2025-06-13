@@ -12,17 +12,17 @@ warnings.simplefilter("ignore", FutureWarning)
 
 class ProblemParameters:
     def __init__(self):
-        self.M = 9 # Number of spatial points
+        self.M = 25 # Number of spatial points
         self.dt = 0.001
-        self.degree = {'space': 1,
+        self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
-        self.plot = False
+        self.plot = True
         self.theta = 1 # Theta parameter for the time-stepping scheme
 
 parameters = ProblemParameters()
 
 # Create a time partition and an ensemble communicator
-time_partition = [4,4,4,4]
+time_partition = [8,8,8,8]  # Total of 60 time steps
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 # Define mesh
@@ -74,7 +74,7 @@ solver_parameters = {'snes_type': 'ksponly',
                      'ksp_rtol': 1e-6,
                      'ksp_atol': 1e-6,
                      'pc_type': 'python',
-                     'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
+                     'pc_python_type': 'CyclicReduction.CyclicReductionPC4',
                      'cr_opts': patch_parameters
                     }
 
