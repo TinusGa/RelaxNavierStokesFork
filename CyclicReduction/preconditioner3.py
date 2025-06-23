@@ -128,23 +128,19 @@ class asQMGPC(AllAtOnceBlockPCBase):
                 solverPC = solver.ksp.getPC()
                 pcctx = solverPC.getPythonContext()
                 pcctx.jac_state = self.jacobian_state
+
     @profiler()
     def apply_impl(self, pc, x, y):
-        # x is the input residual from the outer KSP solver.
-        # y is the output vector where we will compute the correction.
-        # We solve A*y = x for y. The initial guess for y is always zero.
+        # x is the input residual from the outer KSP solver (e.g., FGMRES)
+        # y is the output vector where we will compute the correction
+        # For a preconditioner, the initial guess for the correction is always zero.
         y.zero()
 
         # --- SETUP ---
-        # Set the residual on the finest level to be the input vector x.
-        # us[i] will store the computed correction at each level.
+        # Set the residual on the finest level (level 0) to be the input vector x.
+        # The solution on the finest level (the correction we are computing) starts at 0.
         self.rs[0].assign(x)
-        for u in self.us:
-            u.zero()
-
-        # We need to store the pre-smoothed state on the way down.
-        # Let's use the self.corrections list for this to save memory.
-        pre_smoothed_states = self.corrections
+        self.us[0].zero() # us[0] will accumulate the correction on the finest level
 
         # --- GO DOWN THE V-CYCLE (Pre-smoothing and Restriction) ---
         for i in range(len(self.mesh_hierarchy) - 1):
@@ -155,206 +151,123 @@ class asQMGPC(AllAtOnceBlockPCBase):
             jacobian_i = smoother_i.jacobian
 
             # 1. PRE-SMOOTHING
-            smoother_i.solve(r_i, u_i) # u_i now contains the pre-smoothed approximation.
+            # Apply the pre-configured smoother to get an initial approximation for the correction.
+            # This updates u_i in place.
+            smoother_i.solve(r_i, u_i)
 
-            # Store this pre-smoothed state so we can correct it on the way up.
-            pre_smoothed_states[i].assign(u_i)
-
-            # 2. COMPUTE RESIDUAL AFTER SMOOTHING: r_new = r_i - A_i * u_i
-            r_after_smoothing = r_i.copy() # Temporary vector
-            with u_i.global_vec_ro() as u_i_vec:
-                # We can use r_after_smoothing as the temporary vector for the mat-vec product
-                with r_after_smoothing.global_vec_wo() as r_as_vec:
-                    jacobian_i.mult(None, u_i_vec, r_as_vec) # r_after_smoothing = A*u
-
-            # Now compute r_i - A*u_i and store it back in r_after_smoothing
-            # This is equivalent to r_after_smoothing = r_i - r_after_smoothing
-            r_after_smoothing.scale(-1.0)
-            r_after_smoothing.axpy(1.0, r_i)
+            # 2. COMPUTE THE POST-SMOOTHING RESIDUAL: r_new = r_i - A_i * u_i
+            # This is the first critical fix.
+            r_after_smoothing = r_i.copy() # Make a temporary copy to do the math
+            Au = u_i.copy() # Temporary vector to store the mat-vec product
+            with u_i.global_vec_ro() as u_i_vec, Au.global_vec_wo() as Au_vec:
+                jacobian_i.mult(None, u_i_vec, Au_vec)
+            
+            with r_after_smoothing.global_vec_ro() as r_after_smoothing_vec, Au.global_vec_ro() as Au_vec:
+                r_after_smoothing_vec.axpy(-1.0, Au_vec)  # r_after_smoothing = r_i - A_i * u_i
+            # r_after_smoothing.axpy(-1.0, Au) # r_after_smoothing = r_i - A*u_i
 
             # 3. RESTRICT THE NEW RESIDUAL
-            r_coarse = self.rs[i+1] # Get residual vector for the next level down
-            # This loop is correct
+            # Get the residual vector for the next coarser level
+            r_coarse = self.rs[i+1]
+            # Restrict the correct residual (r_after_smoothing)
             for j in range(self.nlocal_timesteps):
                 self.tm.restrict(r_after_smoothing[j], r_coarse[j])
+            
+            # The next level down now has the correct residual to work on.
 
         # --- COARSEST GRID SOLVE ---
-        # Solves A_c * u_c = r_c for the correction on the coarsest level.
+        # The initial guess for the coarsest correction must be zero.
         u_coarse = self.us[-1]
         r_coarse = self.rs[-1]
-        u_coarse.zero() # Initial guess for the correction is zero.
+        u_coarse.zero()
         
         coarse_solver = self.solvers[-1]
+        # This is an "exact" solve as configured in your initialize method
         coarse_solver.solve(r_coarse, u_coarse)
 
         # --- GO UP THE V-CYCLE (Correction and Post-smoothing) ---
         for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
             # Get objects for the current "fine" level i and the "coarse" level i+1
-            # u_i at this point is the pre-smoothed solution from the downward pass.
-            # We need to retrieve it from where we stored it.
-            u_i = pre_smoothed_states[i]
+            u_i = self.us[i]
             r_i = self.rs[i]
-            
             # This now holds the computed correction from the level below
-            u_coarse_correction = self.us[i+1]
+            u_coarse = self.us[i+1]
             smoother_i = self.solvers[i]
             
             # 4. PROLONGATION AND CORRECTION
-            # Create a temporary vector for the prolonged correction
-            prolonged_correction = self.us[i] # We can reuse this vector
-            prolonged_correction.zero()
+            # This is the second critical fix.
+            correction = self.corrections[i] # Use a temporary vector
             for j in range(self.nlocal_timesteps):
-                self.tm.prolong(u_coarse_correction[j], prolonged_correction[j])
+                self.tm.prolong(u_coarse[j], correction[j])
             
-            # Add the coarse grid correction to the pre-smoothed solution
-            u_i.axpy(1.0, prolonged_correction)
+            # Add the coarse grid correction to the existing fine grid solution
+            u_i.axpy(1.0, correction)
 
             # 5. POST-SMOOTHING
-            # We now smooth the newly corrected solution u_i. The initial guess is non-zero.
-            # The smoother solves A_i*u_i = r_i, starting with the updated u_i.
+            # Smooth the newly corrected solution u_i
             smoother_i.solve(r_i, u_i)
             
-        # The final computed correction is now in pre_smoothed_states[0] (
+        # The final computed correction is now in self.us[0]. Assign it to the output vector y.
+        y.assign(self.us[0])
 
-    # @profiler()
-    # def apply_impl(self, pc, x, y):
-    #     # x is the input residual from the outer KSP solver (e.g., FGMRES)
-    #     # y is the output vector where we will compute the correction
-    #     # For a preconditioner, the initial guess for the correction is always zero.
-    #     y.zero()
+    @profiler()
+    def apply_impl(self, pc, x, y):
+        u_fine = self.us[0]  
+        r_fine = self.rs[0]  
 
-    #     # --- SETUP ---
-    #     # Set the residual on the finest level (level 0) to be the input vector x.
-    #     # The solution on the finest level (the correction we are computing) starts at 0.
-    #     self.rs[0].assign(x)
-    #     self.us[0].zero() # us[0] will accumulate the correction on the finest level
+        u_fine.assign(y)  
+        r_fine.assign(x) 
 
-    #     # --- GO DOWN THE V-CYCLE (Pre-smoothing and Restriction) ---
-    #     for i in range(len(self.mesh_hierarchy) - 1):
-    #         # Get objects for the current "fine" level i
-    #         u_i = self.us[i]
-    #         r_i = self.rs[i]
-    #         smoother_i = self.solvers[i]
-    #         jacobian_i = smoother_i.jacobian
+        # Coarsening
+        for i in range(len(self.mesh_hierarchy) - 1):
+            u_coarse = self.us[i+1]  
+            r_coarse = self.rs[i+1]
 
-    #         # 1. PRE-SMOOTHING
-    #         # Apply the pre-configured smoother to get an initial approximation for the correction.
-    #         # This updates u_i in place.
-    #         smoother_i.solve(r_i, u_i)
-
-    #         # 2. COMPUTE THE POST-SMOOTHING RESIDUAL: r_new = r_i - A_i * u_i
-    #         # This is the first critical fix.
-    #         r_after_smoothing = r_i.copy() # Make a temporary copy to do the math
-    #         Au = u_i.copy() # Temporary vector to store the mat-vec product
-    #         with u_i.global_vec_ro() as u_i_vec, Au.global_vec_wo() as Au_vec:
-    #             jacobian_i.mult(None, u_i_vec, Au_vec)
+            # Pre-smooting and residual update
+            solver = self.solvers[i]     
+            solver.solve(r_fine, u_fine)
+            jacobian = solver.jacobian
+            tmp = r_fine.copy()
+            with tmp.global_vec_ro() as tmpvec, u_fine.global_vec_ro() as uvec:
+                jacobian.mult(None, uvec, tmpvec)
+            tmp.scale(-1.0)
+            r_fine.axpy(1.0, tmp)
             
-    #         with r_after_smoothing.global_vec_ro() as r_after_smoothing_vec, Au.global_vec_ro() as Au_vec:
-    #             r_after_smoothing_vec.axpy(-1.0, Au_vec)  # r_after_smoothing = r_i - A_i * u_i
-    #         # r_after_smoothing.axpy(-1.0, Au) # r_after_smoothing = r_i - A*u_i
-
-    #         # 3. RESTRICT THE NEW RESIDUAL
-    #         # Get the residual vector for the next coarser level
-    #         r_coarse = self.rs[i+1]
-    #         # Restrict the correct residual (r_after_smoothing)
-    #         for j in range(self.nlocal_timesteps):
-    #             self.tm.restrict(r_after_smoothing[j], r_coarse[j])
+            # Transfer the residual to the next coarser mesh
+            for j in range(self.nlocal_timesteps):
+                self.tm.restrict(r_fine[j], r_coarse[j])
             
-    #         # The next level down now has the correct residual to work on.
-
-    #     # --- COARSEST GRID SOLVE ---
-    #     # The initial guess for the coarsest correction must be zero.
-    #     u_coarse = self.us[-1]
-    #     r_coarse = self.rs[-1]
-    #     u_coarse.zero()
+            # u_coarse and r_coarse will be the fine solution and residual in the next iteration
+            u_fine = u_coarse
+            r_fine = r_coarse
         
-    #     coarse_solver = self.solvers[-1]
-    #     # This is an "exact" solve as configured in your initialize method
-    #     coarse_solver.solve(r_coarse, u_coarse)
+        # Coarsest solve
+        solver = self.solvers[-1]
+        solver.solve(r_fine, u_fine)
 
-    #     # --- GO UP THE V-CYCLE (Correction and Post-smoothing) ---
-    #     for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
-    #         # Get objects for the current "fine" level i and the "coarse" level i+1
-    #         u_i = self.us[i]
-    #         r_i = self.rs[i]
-    #         # This now holds the computed correction from the level below
-    #         u_coarse = self.us[i+1]
-    #         smoother_i = self.solvers[i]
+        u_coarse = u_fine
+        r_coarse = r_fine
+
+        # Refine the solution back to the finest mesh
+        # First fine should be the second to last elements in the lists, and we want to loop backwards
+        for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
+            u_coarse = self.us[i+1]
+            u_fine = self.us[i]  
+            r_fine = self.rs[i]  
+            correction = self.corrections[i] 
+
+            # Transfer the solution back to the finer mesh
+            for j in range(self.nlocal_timesteps):
+                self.tm.prolong(u_coarse[j], correction[j])
             
-    #         # 4. PROLONGATION AND CORRECTION
-    #         # This is the second critical fix.
-    #         correction = self.corrections[i] # Use a temporary vector
-    #         for j in range(self.nlocal_timesteps):
-    #             self.tm.prolong(u_coarse[j], correction[j])
-            
-    #         # Add the coarse grid correction to the existing fine grid solution
-    #         u_i.axpy(1.0, correction)
+            u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
 
-    #         # 5. POST-SMOOTHING
-    #         # Smooth the newly corrected solution u_i
-    #         smoother_i.solve(r_i, u_i)
-            
-    #     # The final computed correction is now in self.us[0]. Assign it to the output vector y.
-    #     y.assign(self.us[0])
-
-    # @profiler()
-    # def apply_impl(self, pc, x, y):
-    #     u_fine = self.us[0]  
-    #     r_fine = self.rs[0]  
-
-    #     u_fine.assign(y)  
-    #     r_fine.assign(x) 
-
-    #     # Coarsening
-    #     for i in range(len(self.mesh_hierarchy) - 1):
-    #         u_coarse = self.us[i+1]  
-    #         r_coarse = self.rs[i+1]
-
-    #         # Pre-smooting and residual update
-    #         solver = self.solvers[i]     
-    #         solver.solve(r_fine, u_fine)
-    #         jacobian = solver.jacobian
-    #         tmp = r_fine.copy()
-    #         with tmp.global_vec_ro() as tmpvec, u_fine.global_vec_ro() as uvec:
-    #             jacobian.mult(None, uvec, tmpvec)
-    #         tmp.scale(-1.0)
-    #         r_fine.axpy(1.0, tmp)
-            
-    #         # Transfer the residual to the next coarser mesh
-    #         for j in range(self.nlocal_timesteps):
-    #             self.tm.restrict(r_fine[j], r_coarse[j])
-            
-    #         # u_coarse and r_coarse will be the fine solution and residual in the next iteration
-    #         u_fine = u_coarse
-    #         r_fine = r_coarse
-        
-    #     # Coarsest solve
-    #     solver = self.solvers[-1]
-    #     solver.solve(r_fine, u_fine)
-
-    #     u_coarse = u_fine
-    #     r_coarse = r_fine
-
-    #     # Refine the solution back to the finest mesh
-    #     # First fine should be the second to last elements in the lists, and we want to loop backwards
-    #     for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
-    #         u_coarse = self.us[i+1]
-    #         u_fine = self.us[i]  
-    #         r_fine = self.rs[i]  
-    #         correction = self.corrections[i] 
-
-    #         # Transfer the solution back to the finer mesh
-    #         for j in range(self.nlocal_timesteps):
-    #             self.tm.prolong(u_coarse[j], correction[j])
-            
-    #         u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
-
-    #         # PETSc.Sys.Print(f"Post-smooting")
-    #         solver = self.solvers[i]
-    #         solver.solve(r_fine, u_fine)
+            # PETSc.Sys.Print(f"Post-smooting")
+            solver = self.solvers[i]
+            solver.solve(r_fine, u_fine)
 
 
-    #     y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
+        y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
         
 
 class CyclicReductionPC3(AllAtOnceBlockPCBase):
