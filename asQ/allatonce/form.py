@@ -99,16 +99,36 @@ class AllAtOnceForm(TimePartitionMixin):
 
         bcs_all = []
         for bc in field_bcs:
-            for step in range(aaofunc.nlocal_timesteps):
-                if is_mixed_element:
-                    cpt = bc.function_space().index
-                else:
-                    cpt = 0
-                index = aaofunc._component_indices(step)[cpt]
-                bc_all = fd.DirichletBC(aaofunc.function_space.sub(index),
-                                        bc.function_arg,
-                                        bc.sub_domain)
-                bcs_all.append(bc_all)
+            # for step in range(aaofunc.nlocal_timesteps):
+            #     if is_mixed_element:
+            #         cpt = bc.function_space().index
+            #     else:
+            #         cpt = 0
+            #     index = aaofunc._component_indices(step)[cpt]
+            #     bc_all = fd.DirichletBC(aaofunc.function_space.sub(index),
+            #                             bc.function_arg,
+            #                             bc.sub_domain)
+            #     bcs_all.append(bc_all)
+
+            if callable(bc):
+                for step in range(aaofunc.nlocal_timesteps):
+                    Vs = [aaofunc.function_space.sub(i)
+                          for i in aaofunc._component_indices(step)]
+                    us = aaofunc[step].subfunctions
+                    t = self.time[step]
+                    bcs_step = bc(*Vs, *us, t)
+                    bcs_all.extend(bcs_step)
+            else:
+                for step in range(aaofunc.nlocal_timesteps):
+                    if is_mixed_element:
+                        cpt = bc.function_space().index
+                    else:
+                        cpt = 0
+                    index = aaofunc._component_indices(step)[cpt]
+                    bc_cpt = fd.DirichletBC(aaofunc.function_space.sub(index),
+                                            bc.function_arg,
+                                            bc.sub_domain)
+                    bcs_all.append(bc_cpt)
 
         return bcs_all
 
@@ -146,7 +166,7 @@ class AllAtOnceForm(TimePartitionMixin):
 
         # Set the current state
         if func is not None:
-            self.aaofunc.assign(func, update_halos=False)
+            self.aaofunc.assign(func, update_halos=False, blocking=True)
 
         # Assembly stage
         # The residual on the DirichletBC nodes is set to zero,

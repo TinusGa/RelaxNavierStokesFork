@@ -12,19 +12,20 @@ warnings.simplefilter("ignore", FutureWarning)
 
 class ProblemParameters:
     def __init__(self):
-        self.M = 4 # Number of elements in the base mesh
+        self.M = 8 # Number of elements in the base mesh
         self.mref = 1 # Number of mesh refinement levels for multigrid
-        self.dt = 0.025
+        self.dt = 0.02
         self.R = Constant(1) # Reynolds number
         self.alpha = Constant(1) # Diffusion constant
         self.theta = 1.0 # Time-stepping parameter (1.0 for Backward Euler)
         self.space_degree = 2
+        self.plot = True  # Whether to output results to ParaView
 
 parameters = ProblemParameters()
 
 # 1. ENSEMBLE and MESH setup
 # ----------------------------------------------------
-time_partition = [4,4,4,4]
+time_partition = [16,16,16,16]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters = {"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
@@ -49,14 +50,12 @@ for mesh in mesh_hierarchy:
 U = function_spaces[-1]
 u0 = Function(U)
 x, y = SpatialCoordinate(U.mesh())
-# g = exp(-((x-0.5)**2 + (y-0.5)**2)/0.01)
-# u0.interpolate(g)
-u0.interpolate(sin(2*pi*(x-1))*sin(2*pi*(y-1)))
+u0.interpolate(sin(1*pi*(x-1))*sin(10*pi*(y-1)))
 
 # 4. VARIATIONAL FORMS
 # ----------------------------------
-D = Constant(0.01)  # Diffusion coefficient
-r = Constant(1.0)  # Growth rate
+D = Constant(0.001)  # Diffusion coefficient
+r = Constant(0.5)  # Growth rate
 
 def form_mass(u, v):
     return inner(u, v) * dx
@@ -86,6 +85,8 @@ app_context = {
     'bcs_list': bcs_list,
 }
 
+
+
 solver_parameters = {
     'snes_type': 'newtonls',
     'snes_ksp_ew': None,
@@ -103,17 +104,35 @@ solver_parameters = {
         'ksp_type': 'chebyshev',
         'ksp_chebyshev_esteig': '0,0.25,0,1.05',
         'ksp_max_it': 2,
-        'ksp_convergence_test': 'skip',
+        # 'ksp_monitor_true_residual': None,
         'pc_type': 'python',
         'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
-        'cr_opts': {
-            'patch_type': 'star',
-            'construct_dim': 0,
-            'exclude_subfunctions': "1",
-            'mat_ordering_type': 'natural',
-        }
     }
 }
+
+# solver_parameters = {
+#     'snes_type': 'newtonls',
+#     'snes_ksp_ew': None,
+#     'snes_monitor': None,
+#     'mat_type': 'aij',
+#     'ksp_type': 'fgmres',
+#     "ksp_monitor_true_residual": None,
+#     "ksp_max_it": 100,
+#     "ksp_gmres_restart": 100,
+#     "ksp_atol": 1e-6,
+#     "ksp_rtol": 1e-6,
+#     'pc_type': 'python',
+#     'pc_python_type': 'CyclicReduction.asQMGPC',
+#     'asQMGPC_opts': {
+#         'ksp_type': 'chebyshev',
+#         'ksp_chebyshev_esteig': '0,0.25,0,1.05',
+#         'ksp_max_it': 2,
+#         # 'ksp_monitor_true_residual': None,
+#         'pc_type': 'python',
+#         'pc_python_type': 'asQ.JacobiPC',
+#         'aaojacobi_block': block_parameters,
+#     }
+# }
 
 
 solver = AllAtOnceSolver(aaoform,
@@ -139,11 +158,10 @@ start = time()
 solver.solve()
 PETSc.Sys.Print(f"Finished solve in {time()-start}s")
 
-save_to_VTK = True
 # --------------------------------------------------
 # Output results to ParaView
 # --------------------------------------------------
-if save_to_VTK:
+if parameters.plot:
     import shutil
     import os
     from pyop2.mpi import MPI

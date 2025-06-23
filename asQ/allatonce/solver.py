@@ -106,7 +106,6 @@ class AllAtOnceSolver(TimePartitionMixin):
                                               reference_state=jacobian_reference_state,
                                               options_prefix=options_prefix,
                                               appctx=appctx)
-
         self.jacobian_mat = self.jacobian.petsc_mat()
 
         def form_jacobian(snes, X, J, P):

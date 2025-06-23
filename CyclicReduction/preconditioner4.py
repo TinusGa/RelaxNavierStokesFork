@@ -234,7 +234,7 @@ class asQMGPC2(AllAtOnceBlockPCBase):
                                  self.form_mass, self.form_function,
                                  bcs=bcs)  
             solver = LinearSolver(form, solver_parameters=self.sub_solver_parameters, 
-                                  options_prefix=self.full_prefix)
+                                  options_prefix=self.full_prefix+'pc_python_',)
             
             self.us.append(u)
             self.rs.append(r)
@@ -259,7 +259,8 @@ class asQMGPC2(AllAtOnceBlockPCBase):
             'snes_type': 'ksponly',
             'mat_type': 'matfree',
             'ksp_type': 'richardson',
-            'ksp_rtol': 1e-16,
+            # 'ksp_monitor_true_residual': None,
+            'ksp_rtol': 1e-14,
             'pc_type': 'python',
             'pc_python_type': 'asQ.CirculantPC',
             'circulant_block': {'pc_type': 'lu'},
@@ -290,6 +291,7 @@ class asQMGPC2(AllAtOnceBlockPCBase):
     def update(self, pc):
         # We need to ping the LinearSolvers to have them update their Jacobian based on the current state,
         # i.e. we need this update() to trigger the update() in CyclicReductionPC3
+        PETSc.Sys.Print(f"asQMGPC2: Updating solvers with jacobian state: {self.jacobian_state}")
         for solver in self.solvers:
             solverPC = solver.ksp.getPC()
             pcctx = solverPC.getPythonContext()
@@ -353,7 +355,7 @@ class asQMGPC2(AllAtOnceBlockPCBase):
 
 class CyclicReductionPC4(AllAtOnceBlockPCBase):
 
-    prefix = 'cr_opts_'
+    prefix = 'cr_'
     valid_jacobian_states = tuple(('window', 'slice', 'linear', 'initial', 'reference'))
 
     @profiler()
@@ -361,6 +363,7 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
         super().initialize(pc, final_initialize=False)
 
         aaofunc = self.aaofunc
+        # aaofunc.update_time_halos()
         self.state_func = aaofunc.copy()
         field_function_space = aaofunc.field_function_space
 
@@ -378,17 +381,12 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
         dt1 = fd.Constant(1/self.dt)
         tht = fd.Constant(self.theta)
 
-        solver_parameters = {'snes_type': 'ksponly',
-                            'mat_type': 'aij',
-                            'ksp_type': 'fgmres',
-                            'ksp_max_it': 100,
-                            'ksp_atol': 1e-4,
-                            'ksp_rtol': 1e-4,
-                            'pc_type': 'python',
-                            'pc_python_type': 'firedrake.ASMStarPC',
-                            'pc_star_construct_dim': 0,
-                            'pc_star_sub_sub_pc_type': 'lu',
-                            'pc_star_sub_sub_pc_factor_mat_solver_type': 'umfpack'}
+        # Get solver parameters from the options
+        first_solve_parameters = PETSc.Options(self.full_prefix+'first_solve_parameters_').getAll()
+        bigstep_solve_parameters = PETSc.Options(self.full_prefix+'bigstep_solve_parameters_').getAll()
+        forward_solve_parameters = PETSc.Options(self.full_prefix+'forward_solve_parameters_').getAll()
+
+        PETSc.Sys.Print(f"big solve parameters: {bigstep_solve_parameters}")
 
         # Construct the solvers for each step in forward substitution
         for i in range(self.nlocal_timesteps):
@@ -408,20 +406,23 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
 
             # The mass matrix operator L (a bilinear form) is built using a TrialFunction
             M_op = self.form_mass(*gs, *vs)
-            L = -dt1*M_op
 
-            # The diagonal block D is the Jacobian of the residual F
+            # These form the linear system L * u[i] + D * u[i+1] = f[i+1]
+            L = -dt1*M_op
             D = fd.derivative(F, u0)
 
-            if i == 0:
-                # First time-step on the slice must reference uprev, if uprev exists
-                if self.temporal_rank == 0:
-                    residual = self._x[i] 
-                else:
-                    residual = self._x[i] - L * self._y.uprev
+            if i == 0 and self.temporal_rank == 0:
+                # First slice, first time-step. Only a diagonal block exist here
+                residual = self._x[i] 
+                solver_parameters = first_solve_parameters
+            elif i == 0:
+                # First time-step of a slice, but not the first slice. Need to use the last time-step from the previous slice
+                residual = self._x[i] - L * self._y.uprev
+                solver_parameters = forward_solve_parameters
             else:
                 # Else just use previous time-step local to this slice
                 residual = self._x[i] - L * self._y[i-1]
+                solver_parameters = forward_solve_parameters
             
             block_problem = fd.LinearVariationalProblem(D, residual, self._y[i], 
                                                         bcs=self.block_bcs, 
@@ -432,7 +433,10 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
                                                       solver_parameters=solver_parameters)
             self.block_solvers.append(block_solver)
         
-        # Now we define the BIG STEP
+        # Now we compute a BIG STEP. 
+        # We approximate the solution at the last time-step of the slice using the last time-step of the previous slice.
+        # For the first time-slice, we define the first time-step as the last time-step of the 'previous slice', even though 
+        # there is no previous slice.
         offset = 1 if self.temporal_rank == 0 else 0
         step_size = self.nlocal_timesteps - offset
 
@@ -452,23 +456,6 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
 
         L_big = -bigdt1*M_op
         D_big = fd.derivative(F, u0)
-
-        if self.temporal_rank == 0:
-            u0 = self.state_func[0]
-            t0 = self.time[0]
-            us = fd.split(u0)
-            vs = fd.TestFunctions(field_function_space)
-            M_form = self.form_mass(*us, *vs)
-            K_form = self.form_function(*us, *vs, t0)
-            F = dt1*M_form + dt1*K_form
-            D = fd.derivative(F, u0)
-
-            self.first_problem = fd.LinearVariationalProblem(D, self._x[0], self._y[0],
-                                                            bcs=self.block_bcs, 
-                                                            constant_jacobian=True)
-            self.first_solver = fd.LinearVariationalSolver(self.first_problem,
-                                                        options_prefix=self.full_prefix + 'first_step_',
-                                                        solver_parameters=solver_parameters)
         
         residual = self._x[-1] - L_big * self._y.uprev
         
@@ -478,11 +465,8 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
         
         self.big_solver = fd.LinearVariationalSolver(self.big_problem,
                                                      options_prefix=self.full_prefix + 'big_step_',
-                                                     solver_parameters=solver_parameters)
+                                                     solver_parameters=bigstep_solve_parameters)
 
-        self.patch_parameters = PETSc.Options(self.full_prefix).getAll()
-
-       
         self.initialized = True
 
     @profiler()
@@ -494,34 +478,33 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
         self._y.zero()
 
         if self.temporal_rank == 0:
-            self.first_solver.solve()
+            # self.first_solver.solve()
+            self.block_solvers[0].solve()
         
-        # Wait for update from previous rank, i.e. wait for recieve
+        # Communicate across time-slices to corresponding spatial subcommunicators
         size = self.ensemble.ensemble_comm.size
         rank = self.ensemble.ensemble_comm.rank
-
         dst = (rank+1) % size
         src = (rank-1) % size
 
         if self.temporal_rank > 0:
-            # If this is not the first temporal rank, we must wait for the previous rank to send us its solution
+            # If this is not the first temporal rank, we must wait for the previous rank to send its solution
             self.ensemble.recv(self._y.uprev, source=src, tag=src)
         else:
-            # If this is the first temporal rank, we must set uprev to the last time-step of the previous slice
-            # This is because the first time-step of the slice is the last time-step of the previous slice
+            # If this is the first temporal rank, we set uprev as the first time-step, and do the big step starting from the second time-step
             self._y.uprev.assign(self._y[0])
         
         self.big_solver.solve()
         self._y.unext.assign(self._y[-1]) 
         
-
         if self.temporal_rank < size - 1:
+            # All ranks except the last one send their solution to the next rank
             self.ensemble.send(self._y.unext, dest=dst, tag=rank)
         
         offset = 1 if self.temporal_rank == 0 else 0
 
         for i in range(offset, self.nlocal_timesteps):
-            # Solve the block problem for each time-step
+            # Solve the block problem for each time-step. Each slice now has a uprev to reference and can work independently
             self.block_solvers[i].solve()
     
             
@@ -533,8 +516,8 @@ class CyclicReductionPC4(AllAtOnceBlockPCBase):
         aaofunc = self.aaofunc
         aaoform = self.aaoform
         state_func = self.state_func
-        # jacobian_state = self.jac_state
-        jacobian_state = 'linear'
+        jacobian_state = self.jacobian.jacobian_state
+        PETSc.Sys.Print(f"Updating state to linearise around: {jacobian_state}")
 
         for st, ft in zip(self.time, aaoform.time):
             st.assign(ft)

@@ -49,10 +49,10 @@ for mesh in mesh_hierarchy:
     function_spaces.append(U)
 
     # BC 1
-    # bcs = []
+    bcs = []
 
     # BC 2
-    bcs = [DirichletBC(U, 0, sub_domain=1)]
+    # bcs = [DirichletBC(U, 0, sub_domain=1)]
     bcs_list.append(bcs)
 
 
@@ -64,10 +64,10 @@ u0 = Function(U)
 # Two different IC's and BC's to test
 
 # IC to BC 1
-# u0.project(cos(pi*x)*cos(2*pi*y))
+u0.project(cos(pi*x)*cos(2*pi*y))
 
 # IC to BC 2
-u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+# u0.project(sin(0.25*pi*x)*cos(2*pi*y))
 
 bcs = bcs_list[-1]
 
@@ -99,7 +99,7 @@ mg_levels_parameters = {'ksp_type': 'chebyshev',
                         'ksp_max_it': 2,
                         'ksp_convergence_test': 'skip',
                         'pc_type': 'python',
-                        'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
+                        'pc_python_type': 'CyclicReduction.CyclicReductionPC4',
                         'cr_opts': patch_parameters
                         }
 
@@ -112,7 +112,7 @@ solver_parameters = {'snes_type': 'ksponly',
                      'ksp_atol': 1e-6,
                      'ksp_rtol': 1e-6,
                      'pc_type': 'python',
-                     'pc_python_type': 'CyclicReduction.asQMGPC',
+                     'pc_python_type': 'CyclicReduction.asQMGPC2',
                      'asQMGPC_opts': mg_levels_parameters
                     }
 

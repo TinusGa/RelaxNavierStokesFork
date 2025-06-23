@@ -73,7 +73,7 @@ def plot_cycle(ax, cycle):
     labels = {n: level_labels[G.nodes[n]['label']] for n in G.nodes}
     nx.draw(G, pos, ax=ax, with_labels=True, labels=labels,
             node_color=node_color_list, edge_color=edge_color_list,
-            arrows=True, node_size=1500, font_size=16, width=2)
+            arrows=True, node_size=2000, font_size=26, width=6)
     ax.axis('off')
 
 fig, axes = plt.subplots(1, 3, figsize=(18, 6), gridspec_kw={'width_ratios': [3, 5, 4]})

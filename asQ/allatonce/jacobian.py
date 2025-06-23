@@ -107,7 +107,7 @@ class AllAtOnceJacobian(TimePartitionMixin):
 
     @profiler()
     def update(self, X=None):
-        PETSc.Sys.Print(f"UPDATE in AllAtOnceJacobian")
+        # PETSc.Sys.Print(f"UPDATE in AllAtOnceJacobian")
         """
         Update the state to linearise around according to aaos_jacobian_state.
 
@@ -167,6 +167,7 @@ class AllAtOnceJacobian(TimePartitionMixin):
         # Zero the boundary nodes on the input so that A_ib = A_01 = 0
         for bc in self.bcs:
             bc.zero(self.x.function)
+        self.x.update_time_halos()
 
         # assembly stage
         fd.assemble(self.action, bcs=self.bcs,
@@ -174,8 +175,8 @@ class AllAtOnceJacobian(TimePartitionMixin):
 
         if self._useprev:
             # repeat for the halo part of the matrix action
-            for bc in self.field_bcs:
-                bc.zero(self.x.uprev)
+            # for bc in self.field_bcs:
+            #     bc.zero(self.x.uprev)
             fd.assemble(self.action_prev, bcs=self.bcs,
                         tensor=self.Fprev)
             self.F.cofunction += self.Fprev

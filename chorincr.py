@@ -1,5 +1,6 @@
 from firedrake import *
 from firedrake.petsc import PETSc
+from CyclicReduction.ASMPatchPCs import ASMVankaStarPC, ASMStarPC
 from asQ import (
     create_ensemble,
     AllAtOnceFunction,
@@ -23,7 +24,7 @@ parameters = ProblemParameters()
 
 # 1. ENSEMBLE and MESH setup
 # ----------------------------------------------------
-time_partition = [4, 4]
+time_partition = [4, 4, 4, 4]
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
 distribution_parameters = {"partition": True, "overlap_type": (DistributedMeshOverlapType.VERTEX, 2)}
@@ -37,12 +38,6 @@ mesh_hierarchy = MeshHierarchy(base_mesh, parameters.mref)
 function_spaces = []
 bcs_list = []
 
-# Define a Constant to hold the current time for the BCs.
-# Can be updated by the solver using a callback?
-t_const = Constant(0.0)
-x, y = SpatialCoordinate(mesh_hierarchy[-1])
-ut_expr = as_vector((-cos(pi * x) * sin(pi * y) * exp(-2 * pi**2 * t_const),
-                     sin(pi * x) * cos(pi * y) * exp(-2 * pi**2 * t_const)))
 
 for mesh in mesh_hierarchy:
     V_el = VectorElement("CG", mesh.ufl_cell(), parameters.space_degree + 1)
@@ -50,14 +45,15 @@ for mesh in mesh_hierarchy:
     Z = FunctionSpace(mesh, MixedElement(V_el, Q_el))
     function_spaces.append(Z)
 
-    # Create BCs for each level in the hierarchy
-    bcs = [DirichletBC(Z.sub(0), ut_expr, "on_boundary")]
+    # Create dummy BCs
+    bcs = []
     bcs_list.append(bcs)
 
 
 # 3. INITIAL CONDITION
 # ----------------------
 Z = function_spaces[-1]
+x, y = SpatialCoordinate(Z.mesh())
 z0 = Function(Z)
 u0, p0 = z0.subfunctions
 
@@ -68,21 +64,24 @@ p0.assign(0.0) # Initial pressure can be zero
 # 4. VARIATIONAL FORMS
 # ----------------------------------
 
-def form_mass(z, w):
-    u, _ = split(z)
-    phi, _ = split(w)
+def form_mass(u, p, phi, psi):
     return inner(u, phi) * dx
 
-def form_function(z, w, t):
-    u, p = split(z)
-    phi, psi = split(w)
-    
+def form_function(u, p, phi, psi, t):    
     convection = parameters.R * inner(dot(grad(u), u), phi) * dx
     pressure_term = p * div(phi) * dx
     diffusion_term = parameters.alpha * inner(grad(u), grad(phi)) * dx
     incompressibility = div(u) * psi * dx
 
     return convection + pressure_term + diffusion_term + incompressibility
+
+def uexact(t):
+    return as_vector((-cos(pi * x) * sin(pi * y) * exp(-2 * pi**2 * t),
+                        sin(pi * x) * cos(pi * y) * exp(-2 * pi**2 * t)))
+
+def form_bcs(V, p, phi, psi, t):
+    return [DirichletBC(V, uexact(t), "on_boundary")]
+
 
 # 5. asQ PROBLEM and SOLVER setup
 # ---------------------------------
@@ -94,21 +93,10 @@ aaoform = AllAtOnceForm(aaofunc,
                         parameters.theta,
                         form_mass=form_mass,
                         form_function=form_function,
-                        bcs=bcs_list[-1])
-
-# Callback function to update the time constant for the BCs
-def update_bcs_time(t):
-    t_const.assign(t)
+                        bcs=[form_bcs])
 
 # The appctx dictionary passes necessary information to the solver,
 # including callbacks and multigrid contexts.
-app_context = {
-    'mesh_hierarchy': mesh_hierarchy,
-    'function_spaces': function_spaces,
-    'bcs_list': bcs_list,
-    'pre_function_callback': update_bcs_time,
-    'pre_jacobian_callback': update_bcs_time,
-}
 
 solver_parameters = {
     'snes_type': 'ksponly',
@@ -129,7 +117,7 @@ solver_parameters = {
         'pc_type': 'python',
         'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
         'cr_opts': {
-            'patch_type': 'star',
+            # 'patch_type': 'star',
             'construct_dim': 0,
             'exclude_subfunctions': "1",
             'mat_ordering_type': 'natural',
@@ -137,6 +125,13 @@ solver_parameters = {
     }
 }
 
+
+app_context = {
+    'mesh_hierarchy': mesh_hierarchy,
+    'function_spaces': function_spaces,
+    'bcs_list': bcs_list,
+    'patch_class': ASMVankaStarPC,  
+}
 
 solver = AllAtOnceSolver(aaoform,
                          aaofunc,

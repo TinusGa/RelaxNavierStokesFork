@@ -12,9 +12,9 @@ warnings.simplefilter("ignore", FutureWarning)
 #Problem parameters used if running this script
 class ProblemParameters:
     def __init__(self):
-        self.N = 32
+        self.N = 28
         self.dt = 0.001 #Specified instead of end time
-        self.M = 9
+        self.M = 8
         self.degree = {'space': 2,
                        'time': 0} # DG degree 0 gives backward Euler
         self.plot = True
@@ -74,8 +74,8 @@ solver_parameters = {'snes_type': 'ksponly',
                     'ksp_type': 'fgmres',
                     "ksp_monitor_true_residual": None,
                     "ksp_max_it": 100,
-                    "ksp_atol": 1e-6,
-                    "ksp_rtol": 1e-6,
+                    "ksp_atol": 1e-12,
+                    "ksp_rtol": 1e-12,
                     'pc_type': 'python',
                     'pc_python_type': 'firedrake.ASMStarPC',
                     'pc_star_construct_dim': 0,
@@ -100,3 +100,6 @@ PETSc.Sys.Print(f"DOF's space: {space_dofs}, DOF's time: {time_dofs}, DOF's tota
 start = time()
 solver.solve()
 PETSc.Sys.Print(f"Finished solve in {time()-start}s")
+
+
+

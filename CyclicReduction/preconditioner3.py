@@ -3,199 +3,22 @@ from time import time
 
 import firedrake as fd
 from firedrake.petsc import PETSc
-from firedrake.preconditioners import ASMPatchPC
-from firedrake.logging import warning
-import firedrake.preconditioners 
-
-
-from asQ.pencil import Pencil, Subcomm
-from asQ.profiling import profiler
-from asQ.preconditioners.base import AllAtOnceBlockPCBase
-from asQ.parallel_arrays import SharedArray
-from asQ.allatonce import LinearSolver, time_average
+from CyclicReduction.ASMPatchPCs import ASMStarPC
 
 from asQ import (
     AllAtOnceFunction,
     AllAtOnceCofunction,
     AllAtOnceForm,
-    AllAtOnceSolver,
 )
+
+from asQ.pencil import Pencil, Subcomm
+from asQ.profiling import profiler
+from asQ.preconditioners.base import AllAtOnceBlockPCBase
+from asQ.allatonce import LinearSolver, time_average
 
 
 __all__ = ['CyclicReductionPC3','ApproxCyclicReductionPC3','asQMGPC', 'DirectSolvePC']
 
-def order_points(mesh_dm, points, ordering_type, prefix):
-    '''Order the points (topological entities) of a patch based
-    on the adjacency graph of the mesh.
-
-    :arg mesh_dm: the `mesh.topology_dm`
-    :arg points: array with point indices forming the patch
-    :arg ordering_type: a `PETSc.Mat.OrderingType`
-    :arg prefix: the prefix associated with additional ordering options
-
-    :returns: the permuted array of points
-    '''
-    # Order points by decreasing topological dimension (interiors, faces, edges, vertices)
-    points = points[::-1]
-    if ordering_type == "natural":
-        return points
-    subgraph = [np.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
-    ia = np.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
-    ja = np.concatenate(subgraph).astype(PETSc.IntType)
-    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, np.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
-    A.setOptionsPrefix(prefix)
-    rperm, cperm = A.getOrdering(ordering_type)
-    indices = points[rperm.getIndices()]
-    A.destroy()
-    rperm.destroy()
-    cperm.destroy()
-    return indices
-
-def order_points_vanka(mesh_dm, points, ordering_type, prefix):
-    '''Order a the points (topological entities) of a patch based on the adjacency graph of the mesh.
-    :arg mesh_dm: the `mesh.topology_dm`
-    :arg points: array with point indices forming the patch
-    :arg ordering_type: a `PETSc.Mat.OrderingType`
-    :arg prefix: the prefix associated with additional ordering options
-    :returns: the permuted array of points                                                                        
-    '''
-    if ordering_type == "natural":
-        return points
-    subgraph = [numpy.intersect1d(points, mesh_dm.getAdjacency(p), return_indices=True)[1] for p in points]
-    ia = numpy.cumsum([0] + [len(neigh) for neigh in subgraph]).astype(PETSc.IntType)
-    ja = numpy.concatenate(subgraph).astype(PETSc.IntType)
-    A = PETSc.Mat().createAIJ((len(points), )*2, csr=(ia, ja, numpy.ones(ja.shape, PETSc.RealType)), comm=PETSc.COMM_SELF)
-    A.setOptionsPrefix(prefix)
-    rperm, _ = A.getOrdering(ordering_type)
-    A.destroy()
-    return points[rperm.getIndices()]
-
-class ASMVankaStarPC(ASMPatchPC):
-    '''Patch-based PC using closure of star of mesh entities implemented as an
-    :class:`ASMPatchPC`.
-    ASMVankaStarPC is an additive Schwarz preconditioner where each patch
-    consists of all DoFs on the closure of the star of the mesh entity
-    specified by `pc_vanka_construct_dim` (or codim).
-    This version includes the star of the "exclude_subfunctions" in the patch
-    '''
-
-    _prefix = "pc_vankastar_"
-
-    def get_patches(self, V):
-        mesh = V._mesh
-        mesh_dm = mesh.topology_dm
-        if mesh.layers:
-            warning("applying ASMVankaPC on an extruded mesh")
-        
-        # Obtain the topological entities to use to construct the stars
-        depth = PETSc.Options().getInt(self.prefix + "construct_dim", default=-1)
-        height = PETSc.Options().getInt(self.prefix + "construct_codim", default=-1)
-        if (depth == -1 and height == -1) or (depth != -1 and height != -1):
-            raise ValueError(f"Must set exactly one of {self.prefix}construct_dim or {self.prefix}construct_codim")
-
-        exclude_subfunctions = [int(subspace) for subspace in PETSc.Options().getString(self.prefix+"exclude_subfunctions", default="-1").split(",")]
-        ordering = PETSc.Options().getString(self.prefix+"mat_ordering_type", default="natural")
-        # Accessing .indices causes the allocation of a global array,
-        # so we need to cache these for efficiency
-        V_local_ises_indices = []
-        for (i, W) in enumerate(V):
-            V_local_ises_indices.append(V.dof_dset.local_ises[i].indices)
-
-        # Build index sets for the patches
-        ises = []
-        if depth != -1:
-            (start, end) = mesh_dm.getDepthStratum(depth)
-        else:
-            (start, end) = mesh_dm.getHeightStratum(height)
-
-        for seed in range(start, end):
-            # Only build patches over owned DoFs
-            if mesh_dm.getLabelValue("pyop2_ghost", seed) != -1:
-                continue
-
-            # Create point list from mesh DM
-            star, _ = mesh_dm.getTransitiveClosure(seed, useCone=False)
-            pt_array_star = order_points_vanka(mesh_dm, star, ordering, self.prefix)
-            
-            pt_array_vanka = set()
-            for pt in star.tolist():
-                closure, _ = mesh_dm.getTransitiveClosure(pt, useCone=True)
-                pt_array_vanka.update(closure.tolist())
-
-            pt_array_vanka = order_points_vanka(mesh_dm, pt_array_vanka, ordering, self.prefix)
-            # Get DoF indices for patch
-            indices = []
-            for (i, W) in enumerate(V):
-                section = W.dm.getDefaultSection()
-                if i in exclude_subfunctions:
-                    loop_list = pt_array_star
-                else:
-                    loop_list = pt_array_vanka
-                for p in loop_list:
-                    dof = section.getDof(p)
-                    if dof <= 0:
-                        continue
-                    off = section.getOffset(p)
-                    # Local indices within W
-                    W_indices = slice(off*W.value_size, W.value_size * (off + dof))
-                    indices.extend(V_local_ises_indices[i][W_indices])
-            iset = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-            ises.append(iset)
-
-        return ises
-
-class ASMStarPC(ASMPatchPC):
-    '''Patch-based PC using Star of mesh entities implmented as an
-    :class:`ASMPatchPC`.
-
-    ASMStarPC is an additive Schwarz preconditioner where each patch
-    consists of all DoFs on the topological star of the mesh entity
-    specified by `pc_star_construct_dim`.
-    '''
-
-    _prefix = "pc_star_"
-
-    def get_patches(self, V):
-        mesh = V._mesh
-        mesh_dm = mesh.topology_dm
-        if mesh.cell_set._extruded:
-            warning("applying ASMStarPC on an extruded mesh")
-
-        # Obtain the topological entities to use to construct the stars
-        opts = PETSc.Options(self.prefix)
-        depth = opts.getInt("construct_dim", default=0)
-        ordering = opts.getString("mat_ordering_type", default="natural")
-        # Accessing .indices causes the allocation of a global array,
-        # so we need to cache these for efficiency
-        V_local_ises_indices = tuple(iset.indices for iset in V.dof_dset.local_ises)
-
-        # Build index sets for the patches
-        ises = []
-        (start, end) = mesh_dm.getDepthStratum(depth)
-        for seed in range(start, end):
-            # Only build patches over owned DoFs
-            if mesh_dm.getLabelValue("pyop2_ghost", seed) != -1:
-                continue
-
-            # Create point list from mesh DM
-            pt_array, _ = mesh_dm.getTransitiveClosure(seed, useCone=False)
-            pt_array = order_points(mesh_dm, pt_array, ordering, self.prefix)
-
-            # Get DoF indices for patch
-            indices = []
-            for (i, W) in enumerate(V):
-                section = W.dm.getDefaultSection()
-                for p in pt_array.tolist():
-                    dof = section.getDof(p)
-                    if dof <= 0:
-                        continue
-                    off = section.getOffset(p)
-                    # Local indices within W
-                    W_indices = slice(off*W.block_size, W.block_size * (off + dof))
-                    indices.extend(V_local_ises_indices[i][W_indices])
-            iset = PETSc.IS().createGeneral(indices, comm=PETSc.COMM_SELF)
-            ises.append(iset)
-        return ises
 
 class asQMGPC(AllAtOnceBlockPCBase):
     prefix = 'opts_'
@@ -234,7 +57,7 @@ class asQMGPC(AllAtOnceBlockPCBase):
                                  self.form_mass, self.form_function,
                                  bcs=bcs)  
             solver = LinearSolver(form, solver_parameters=self.sub_solver_parameters, 
-                                  options_prefix=self.full_prefix)
+                                  options_prefix=self.full_prefix, appctx=self.appctx)
             
             self.us.append(u)
             self.rs.append(r)
@@ -290,66 +113,248 @@ class asQMGPC(AllAtOnceBlockPCBase):
     def update(self, pc):
         # We need to ping the LinearSolvers to have them update their Jacobian based on the current state,
         # i.e. we need this update() to trigger the update() in CyclicReductionPC3
-        PETSc.Sys.Print("Updating in asQMGPC")
-        for solver in self.solvers:
-            solverPC = solver.ksp.getPC()
-            pcctx = solverPC.getPythonContext()
-            # Add the jacobian state to the appctx
-            pcctx.jac_state = self.jacobian_state
-            pcctx.setUp(solverPC)
-
+        # PETSc.Sys.Print("Updating in asQMGPC")
+        if self.jacobian_state != 'linear':
+            for solver in self.solvers:
+                solverPC = solver.ksp.getPC()
+                pcctx = solverPC.getPythonContext()
+                # Add the jacobian state to the appctx
+                pcctx.jac_state = self.jacobian_state
+                pcctx.setUp(solverPC)
+        else:
+            # If the jacobian state is linear, we don't need to update the solvers
+            # but we still need to set the jacobian state in the appctx
+            for solver in self.solvers:
+                solverPC = solver.ksp.getPC()
+                pcctx = solverPC.getPythonContext()
+                pcctx.jac_state = self.jacobian_state
     @profiler()
     def apply_impl(self, pc, x, y):
-        u_fine = self.us[0]  
-        r_fine = self.rs[0]  
+        # x is the input residual from the outer KSP solver.
+        # y is the output vector where we will compute the correction.
+        # We solve A*y = x for y. The initial guess for y is always zero.
+        y.zero()
 
-        u_fine.assign(y)  
-        r_fine.assign(x) 
+        # --- SETUP ---
+        # Set the residual on the finest level to be the input vector x.
+        # us[i] will store the computed correction at each level.
+        self.rs[0].assign(x)
+        for u in self.us:
+            u.zero()
 
-        # Coarsening
+        # We need to store the pre-smoothed state on the way down.
+        # Let's use the self.corrections list for this to save memory.
+        pre_smoothed_states = self.corrections
+
+        # --- GO DOWN THE V-CYCLE (Pre-smoothing and Restriction) ---
         for i in range(len(self.mesh_hierarchy) - 1):
-            u_coarse = self.us[i+1]  
-            r_coarse = self.rs[i+1]
+            # Get objects for the current "fine" level i
+            u_i = self.us[i]
+            r_i = self.rs[i]
+            smoother_i = self.solvers[i]
+            jacobian_i = smoother_i.jacobian
 
-            # PETSc.Sys.Print(f"Pre-smooting")
-            solver = self.solvers[i]     
-            solver.solve(r_fine, u_fine)
-            
-            # Transfer the residual to the next coarser mesh
+            # 1. PRE-SMOOTHING
+            smoother_i.solve(r_i, u_i) # u_i now contains the pre-smoothed approximation.
+
+            # Store this pre-smoothed state so we can correct it on the way up.
+            pre_smoothed_states[i].assign(u_i)
+
+            # 2. COMPUTE RESIDUAL AFTER SMOOTHING: r_new = r_i - A_i * u_i
+            r_after_smoothing = r_i.copy() # Temporary vector
+            with u_i.global_vec_ro() as u_i_vec:
+                # We can use r_after_smoothing as the temporary vector for the mat-vec product
+                with r_after_smoothing.global_vec_wo() as r_as_vec:
+                    jacobian_i.mult(None, u_i_vec, r_as_vec) # r_after_smoothing = A*u
+
+            # Now compute r_i - A*u_i and store it back in r_after_smoothing
+            # This is equivalent to r_after_smoothing = r_i - r_after_smoothing
+            r_after_smoothing.scale(-1.0)
+            r_after_smoothing.axpy(1.0, r_i)
+
+            # 3. RESTRICT THE NEW RESIDUAL
+            r_coarse = self.rs[i+1] # Get residual vector for the next level down
+            # This loop is correct
             for j in range(self.nlocal_timesteps):
-                self.tm.restrict(r_fine[j], r_coarse[j])
-            
-            # u_coarse and r_coarse will be the fine solution and residual in the next iteration
-            u_fine = u_coarse
-            r_fine = r_coarse
+                self.tm.restrict(r_after_smoothing[j], r_coarse[j])
+
+        # --- COARSEST GRID SOLVE ---
+        # Solves A_c * u_c = r_c for the correction on the coarsest level.
+        u_coarse = self.us[-1]
+        r_coarse = self.rs[-1]
+        u_coarse.zero() # Initial guess for the correction is zero.
         
-        # Coarsest solve
-        solver = self.solvers[-1]
-        solver.solve(r_fine, u_fine)
+        coarse_solver = self.solvers[-1]
+        coarse_solver.solve(r_coarse, u_coarse)
 
-        u_coarse = u_fine
-        r_coarse = r_fine
-
-        # Refine the solution back to the finest mesh
-        # First fine should be the second to last elements in the lists, and we want to loop backwards
+        # --- GO UP THE V-CYCLE (Correction and Post-smoothing) ---
         for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
-            u_coarse = self.us[i+1]
-            u_fine = self.us[i]  
-            r_fine = self.rs[i]  
-            correction = self.corrections[i] 
-
-            # Transfer the solution back to the finer mesh
-            for j in range(self.nlocal_timesteps):
-                self.tm.prolong(u_coarse[j], correction[j])
+            # Get objects for the current "fine" level i and the "coarse" level i+1
+            # u_i at this point is the pre-smoothed solution from the downward pass.
+            # We need to retrieve it from where we stored it.
+            u_i = pre_smoothed_states[i]
+            r_i = self.rs[i]
             
-            u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
+            # This now holds the computed correction from the level below
+            u_coarse_correction = self.us[i+1]
+            smoother_i = self.solvers[i]
+            
+            # 4. PROLONGATION AND CORRECTION
+            # Create a temporary vector for the prolonged correction
+            prolonged_correction = self.us[i] # We can reuse this vector
+            prolonged_correction.zero()
+            for j in range(self.nlocal_timesteps):
+                self.tm.prolong(u_coarse_correction[j], prolonged_correction[j])
+            
+            # Add the coarse grid correction to the pre-smoothed solution
+            u_i.axpy(1.0, prolonged_correction)
 
-            # PETSc.Sys.Print(f"Post-smooting")
-            solver = self.solvers[i]
-            solver.solve(r_fine, u_fine)
+            # 5. POST-SMOOTHING
+            # We now smooth the newly corrected solution u_i. The initial guess is non-zero.
+            # The smoother solves A_i*u_i = r_i, starting with the updated u_i.
+            smoother_i.solve(r_i, u_i)
+            
+        # The final computed correction is now in pre_smoothed_states[0] (
+
+    # @profiler()
+    # def apply_impl(self, pc, x, y):
+    #     # x is the input residual from the outer KSP solver (e.g., FGMRES)
+    #     # y is the output vector where we will compute the correction
+    #     # For a preconditioner, the initial guess for the correction is always zero.
+    #     y.zero()
+
+    #     # --- SETUP ---
+    #     # Set the residual on the finest level (level 0) to be the input vector x.
+    #     # The solution on the finest level (the correction we are computing) starts at 0.
+    #     self.rs[0].assign(x)
+    #     self.us[0].zero() # us[0] will accumulate the correction on the finest level
+
+    #     # --- GO DOWN THE V-CYCLE (Pre-smoothing and Restriction) ---
+    #     for i in range(len(self.mesh_hierarchy) - 1):
+    #         # Get objects for the current "fine" level i
+    #         u_i = self.us[i]
+    #         r_i = self.rs[i]
+    #         smoother_i = self.solvers[i]
+    #         jacobian_i = smoother_i.jacobian
+
+    #         # 1. PRE-SMOOTHING
+    #         # Apply the pre-configured smoother to get an initial approximation for the correction.
+    #         # This updates u_i in place.
+    #         smoother_i.solve(r_i, u_i)
+
+    #         # 2. COMPUTE THE POST-SMOOTHING RESIDUAL: r_new = r_i - A_i * u_i
+    #         # This is the first critical fix.
+    #         r_after_smoothing = r_i.copy() # Make a temporary copy to do the math
+    #         Au = u_i.copy() # Temporary vector to store the mat-vec product
+    #         with u_i.global_vec_ro() as u_i_vec, Au.global_vec_wo() as Au_vec:
+    #             jacobian_i.mult(None, u_i_vec, Au_vec)
+            
+    #         with r_after_smoothing.global_vec_ro() as r_after_smoothing_vec, Au.global_vec_ro() as Au_vec:
+    #             r_after_smoothing_vec.axpy(-1.0, Au_vec)  # r_after_smoothing = r_i - A_i * u_i
+    #         # r_after_smoothing.axpy(-1.0, Au) # r_after_smoothing = r_i - A*u_i
+
+    #         # 3. RESTRICT THE NEW RESIDUAL
+    #         # Get the residual vector for the next coarser level
+    #         r_coarse = self.rs[i+1]
+    #         # Restrict the correct residual (r_after_smoothing)
+    #         for j in range(self.nlocal_timesteps):
+    #             self.tm.restrict(r_after_smoothing[j], r_coarse[j])
+            
+    #         # The next level down now has the correct residual to work on.
+
+    #     # --- COARSEST GRID SOLVE ---
+    #     # The initial guess for the coarsest correction must be zero.
+    #     u_coarse = self.us[-1]
+    #     r_coarse = self.rs[-1]
+    #     u_coarse.zero()
+        
+    #     coarse_solver = self.solvers[-1]
+    #     # This is an "exact" solve as configured in your initialize method
+    #     coarse_solver.solve(r_coarse, u_coarse)
+
+    #     # --- GO UP THE V-CYCLE (Correction and Post-smoothing) ---
+    #     for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
+    #         # Get objects for the current "fine" level i and the "coarse" level i+1
+    #         u_i = self.us[i]
+    #         r_i = self.rs[i]
+    #         # This now holds the computed correction from the level below
+    #         u_coarse = self.us[i+1]
+    #         smoother_i = self.solvers[i]
+            
+    #         # 4. PROLONGATION AND CORRECTION
+    #         # This is the second critical fix.
+    #         correction = self.corrections[i] # Use a temporary vector
+    #         for j in range(self.nlocal_timesteps):
+    #             self.tm.prolong(u_coarse[j], correction[j])
+            
+    #         # Add the coarse grid correction to the existing fine grid solution
+    #         u_i.axpy(1.0, correction)
+
+    #         # 5. POST-SMOOTHING
+    #         # Smooth the newly corrected solution u_i
+    #         smoother_i.solve(r_i, u_i)
+            
+    #     # The final computed correction is now in self.us[0]. Assign it to the output vector y.
+    #     y.assign(self.us[0])
+
+    # @profiler()
+    # def apply_impl(self, pc, x, y):
+    #     u_fine = self.us[0]  
+    #     r_fine = self.rs[0]  
+
+    #     u_fine.assign(y)  
+    #     r_fine.assign(x) 
+
+    #     # Coarsening
+    #     for i in range(len(self.mesh_hierarchy) - 1):
+    #         u_coarse = self.us[i+1]  
+    #         r_coarse = self.rs[i+1]
+
+    #         # Pre-smooting and residual update
+    #         solver = self.solvers[i]     
+    #         solver.solve(r_fine, u_fine)
+    #         jacobian = solver.jacobian
+    #         tmp = r_fine.copy()
+    #         with tmp.global_vec_ro() as tmpvec, u_fine.global_vec_ro() as uvec:
+    #             jacobian.mult(None, uvec, tmpvec)
+    #         tmp.scale(-1.0)
+    #         r_fine.axpy(1.0, tmp)
+            
+    #         # Transfer the residual to the next coarser mesh
+    #         for j in range(self.nlocal_timesteps):
+    #             self.tm.restrict(r_fine[j], r_coarse[j])
+            
+    #         # u_coarse and r_coarse will be the fine solution and residual in the next iteration
+    #         u_fine = u_coarse
+    #         r_fine = r_coarse
+        
+    #     # Coarsest solve
+    #     solver = self.solvers[-1]
+    #     solver.solve(r_fine, u_fine)
+
+    #     u_coarse = u_fine
+    #     r_coarse = r_fine
+
+    #     # Refine the solution back to the finest mesh
+    #     # First fine should be the second to last elements in the lists, and we want to loop backwards
+    #     for i in range(len(self.mesh_hierarchy) - 2, -1, -1):
+    #         u_coarse = self.us[i+1]
+    #         u_fine = self.us[i]  
+    #         r_fine = self.rs[i]  
+    #         correction = self.corrections[i] 
+
+    #         # Transfer the solution back to the finer mesh
+    #         for j in range(self.nlocal_timesteps):
+    #             self.tm.prolong(u_coarse[j], correction[j])
+            
+    #         u_fine.axpy(1.0, correction)  # Update the fine solution with the correction
+
+    #         # PETSc.Sys.Print(f"Post-smooting")
+    #         solver = self.solvers[i]
+    #         solver.solve(r_fine, u_fine)
 
 
-        y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
+    #     y.assign(self.us[0])  # Final solution is in the finest mesh's AllAtOnceFunction
         
 
 class CyclicReductionPC3(AllAtOnceBlockPCBase):
@@ -360,7 +365,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
     @profiler()
     def initialize(self,pc):
         super().initialize(pc, final_initialize=False)
-        start = time()
+        # start = time()
         self.patch_parameters = PETSc.Options(self.full_prefix).getAll()
 
         # Obtain the time-slice local Jacobian matrix and the contribution from the previous time-slice. self.prevmat is 'None' for temporal rank 0.
@@ -387,11 +392,13 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         
         # Initialize the desired patch PC. 
         # TODO: Currently only supports 'star' patch type. Should make this dynamic through e.g. appctx.
-        self.star_pc = ASMStarPC()
-        self.star_pc.prefix = self.full_prefix
+        # self.star_pc = ASMStarPC()
+
+        self.patch_pc = self.appctx.get('patch_class', ASMStarPC)()
+        self.patch_pc.prefix = self.full_prefix
 
         # Get patch IS in rank local numbering, split each into nlocal_timesteps
-        rank_local_isets = self.star_pc.get_patches(self.function_space)
+        rank_local_isets = self.patch_pc.get_patches(self.function_space)
         rank_local_isets = list(np.array_split(iset.getIndices(), self.nlocal_timesteps) for iset in rank_local_isets)
         rank_local_isets = list(iset for iset_list in rank_local_isets for iset in iset_list)
 
@@ -408,7 +415,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
         if self.temporal_rank > 0:
             self.isrows = self.keep_every_n(self.slice_local_isets, self.nlocal_timesteps,0)
-            field_patches = self.star_pc.get_patches(self.field_function_space)
+            field_patches = self.patch_pc.get_patches(self.field_function_space)
             field_lgmap = self.field_function_space.dof_dset.lgmap
             self.iscols = list(field_lgmap.applyIS(iset) for iset in field_patches)
         else:
@@ -417,9 +424,9 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             self.isrows = list(PETSc.IS().createGeneral(array, comm=fd.COMM_SELF) for array in self.isrows)
             self.iscols = self.isrows
         
-        PETSc.Sys.Print(f"Time to set-up isets: {time()-start:.2f}s")
+        # PETSc.Sys.Print(f"Time to set-up isets: {time()-start:.2f}s")
 
-        start = time()
+        # start = time()
 
         # Obtain the diagonal and off-diagonal matrices for the time-slice including communication
         self.diag_mats = self.mat.createSubMatrices(self.slice_local_isets, 
@@ -439,12 +446,12 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # Factor the diagonal matrices for the diagonal solve version of apply_impl
         self.factored_diag_mats = list(self.get_factored_matrix(mat, comm=fd.COMM_SELF) for mat in self.diag_mats)
         
-        PETSc.Sys.Print(f"Time to set-up submats: {time()-start:.2f}s")
+        # PETSc.Sys.Print(f"Time to set-up submats: {time()-start:.2f}s")
 
         #-----------------------------------------------
         # Scatters for apply_impl
         #-----------------------------------------------
-        start = time()
+        # start = time()
 
         # In apply_impl we will work with the global indices of the patches,
         # therefore we must shift the indices of the IS's to global numbering.
@@ -501,7 +508,8 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
             # For scatter from sub_sol_v to master_sol_vec (used in REVERSE)
             self.scatters_sub_sol_to_master.append(sc_master_to_sub) # We reuse the same scatter object
-        PETSc.Sys.Print(f"Time to set-up scatters: {time()-start:.2f}s")
+        # PETSc.Sys.Print(f"Time to set-up scatters: {time()-start:.2f}s")
+
         self.initialized = True
 
     def reshape_list(self, data, rows, cols):
@@ -572,13 +580,11 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         """
         Update the state to linearise around according to aaojacobi_state.
         """
-        PETSc.Sys.Print(f"Update called in CRPC3")
 
         aaofunc = self.aaofunc
-        # aaoform = self.aaoform
-        # state_func = self.state_func
+        aaoform = self.aaoform
+        state_func = self.state_func
         # jacobian_state = self.jac_state
-        # jacobian_state = 'initial'
 
         # for st, ft in zip(self.time, aaoform.time):
         #     st.assign(ft)
@@ -614,33 +620,34 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # elif jacobian_state == 'user':
         #     pass
 
-        aaofunc.update_time_halos()
+        # aaofunc.update_time_halos()
 
         # Recompute the Jacobian matrices with the updated state
-        self.mat = fd.assemble(self.jacobian.form, bcs=self.jacobian.bcs).petscmat
-        self.prevmat = fd.assemble(self.jacobian.form_prev).petscmat if self.jacobian._useprev else self.prevmat
+        # if jacobian_state != 'linear':
+        #     self.mat = fd.assemble(self.jacobian.form, bcs=self.jacobian.bcs).petscmat
+        #     self.prevmat = fd.assemble(self.jacobian.form_prev).petscmat if self.jacobian._useprev else self.prevmat
 
-        self.diag_mats = self.mat.createSubMatrices(self.slice_local_isets, 
-                                                    self.slice_local_isets)
-        self.offdiag_mats = self.mat.createSubMatrices(self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, 0),
-                                                       self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, self.nlocal_timesteps-1))
-        self.prev_offdiag_mats = self.prevmat.createSubMatrices(self.isrows, 
-                                                                self.iscols)
-        
-        # We reshape for easier insert, then reshape back to the original structure
-        self.offdiag_mats = self.reshape_list(self.offdiag_mats, len(self.offdiag_mats)//(self.nlocal_timesteps-1), self.nlocal_timesteps-1)
-        for i, prev_offdiag_mat in enumerate(self.prev_offdiag_mats):
-            self.offdiag_mats[i].insert(0, prev_offdiag_mat)
-        
-        self.offdiag_mats = list(mat for mat_list in self.offdiag_mats for mat in mat_list)
+        #     self.diag_mats = self.mat.createSubMatrices(self.slice_local_isets, 
+        #                                                 self.slice_local_isets)
+        #     self.offdiag_mats = self.mat.createSubMatrices(self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, 0),
+        #                                                 self.skip_every_n(self.slice_local_isets, self.nlocal_timesteps, self.nlocal_timesteps-1))
+        #     self.prev_offdiag_mats = self.prevmat.createSubMatrices(self.isrows, 
+        #                                                             self.iscols)
+            
+        #     # We reshape for easier insert, then reshape back to the original structure
+        #     self.offdiag_mats = self.reshape_list(self.offdiag_mats, len(self.offdiag_mats)//(self.nlocal_timesteps-1), self.nlocal_timesteps-1)
+        #     for i, prev_offdiag_mat in enumerate(self.prev_offdiag_mats):
+        #         self.offdiag_mats[i].insert(0, prev_offdiag_mat)
+            
+        #     self.offdiag_mats = list(mat for mat_list in self.offdiag_mats for mat in mat_list)
 
-        # Factor the diagonal matrices for the diagonal solve version of apply_impl
-        self.factored_diag_mats = list(self.get_factored_matrix(mat, comm=fd.COMM_SELF) for mat in self.diag_mats)
+        #     # Factor the diagonal matrices for the diagonal solve version of apply_impl
+        #     self.factored_diag_mats = list(self.get_factored_matrix(mat, comm=fd.COMM_SELF) for mat in self.diag_mats)
 
         return
 
     @profiler()
-    def apply_impl(self, pc, x, y):
+    def apply_impl_1(self, pc, x, y):
         """
         Test apply_impl, using only the main diag and doing a simple solve, like PCASM
         To ensure that the patch distribution is correct, and initialize does what it should.
@@ -678,7 +685,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
             self.scatter_master_to_y.scatter(self.master_sol_vec, yvec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.FORWARD) # This scatter is defined from master to global.
 
     @profiler()
-    def apply_impl_1(self, pc, x, y):
+    def apply_impl(self, pc, x, y):
         start = time()
         """
         Custom additive Schwarz-style preconditioner:
@@ -800,7 +807,11 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         
         time3 = time() - start
 
-        PETSc.Sys.Print(f"Setup-time and first block solve(s) {time1}. Comm interface {time2}. Insert solution {time3}")
+        # PETSc.Sys.Print(f"Memory address of y: {id(y)}")
+        self.appctx['time1'] += time1
+        self.appctx['time2'] += time2
+        self.appctx['time3'] += time3
+
 
     @profiler()
     def forward_reduction(self, lower_diag, main_diag, rhs):
