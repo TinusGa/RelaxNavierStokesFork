@@ -12,7 +12,7 @@ warnings.simplefilter("ignore", FutureWarning)
 #Problem parameters used if running this script
 class ProblemParameters:
     def __init__(self):
-        self.N = 28
+        self.N = 8
         self.dt = 0.001 #Specified instead of end time
         self.M = 8
         self.degree = {'space': 2,
@@ -48,13 +48,14 @@ U = FunctionSpace(mesh,spacetime_element)
 #Define initial condition
 x, y, t = SpatialCoordinate(U.mesh())
 u0 = Function(U)
-u0.project(cos(pi*x)*cos(2*pi*y))
-bcs = []
-# u0.project(sin(0.25*pi*x)*cos(2*pi*y))
-# bcs = [DirichletBC(U, 0, sub_domain=1)]
+# u0.project(cos(pi*x)*cos(2*pi*y))
+# bcs = []
+u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+bcs = [DirichletBC(U, 0, sub_domain=1)]
 
 #Set up residual
-u = Function(U)
+# u = Function(U)
+u = u0.copy()
 phi = TestFunction(U)
 
 gradu = as_vector([u.dx(0),
@@ -82,7 +83,7 @@ solver_parameters = {'snes_type': 'ksponly',
                     'pc_star_sub_sub_pc_type': 'lu',
                     'pc_star_sub_sub_pc_factor_mat_solver_type': 'umfpack',}
     
-problem = NonlinearVariationalProblem(F, u)
+problem = NonlinearVariationalProblem(F, u, bcs=bcs)
 solver = NonlinearVariationalSolver(problem, solver_parameters=solver_parameters)
 
 # Some useful prints

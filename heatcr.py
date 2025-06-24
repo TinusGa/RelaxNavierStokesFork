@@ -5,6 +5,7 @@ from asQ import (
     AllAtOnceFunction,
     AllAtOnceForm,
     AllAtOnceSolver,
+    LinearSolver
 )
 from time import time
 import warnings
@@ -74,11 +75,11 @@ U = function_spaces[-1]
 x, y = SpatialCoordinate(U.mesh())
 u0 = Function(U)
 
-u0.interpolate(cos(pi*x)*cos(2*pi*y))
-bcs = []
+# u0.interpolate(cos(pi*x)*cos(2*pi*y))
+# bcs = []
 
-# u0.project(sin(0.25*pi*x)*cos(2*pi*y))
-# bcs = [DirichletBC(U, 0, sub_domain=1)]
+u0.project(sin(0.25*pi*x)*cos(2*pi*y))
+bcs = [DirichletBC(U, 0, sub_domain=1)]
 
 # Define forms
 def form_mass(u, v):
@@ -111,6 +112,27 @@ appctx = {
 }
 
 #Set up solver parameters. 
+# solver_parameters = {
+#     'snes_type': 'ksponly',
+#     'mat_type': 'aij',
+#     'ksp_type': 'fgmres',
+#     "ksp_monitor_true_residual": None,
+#     "ksp_max_it": 100,
+#     "ksp_gmres_restart": 100,
+#     "ksp_atol": 1e-8,
+#     "ksp_rtol": 1e-8,
+#     'pc_type': 'python',
+#     'pc_python_type': 'CyclicReduction.asQMGPC',
+#     'asQMGPC_opts': {
+#         'ksp_type': 'chebyshev',
+#         'ksp_chebyshev_esteig': '0,0.25,0,1.05',
+#         'ksp_max_it': 2,
+#         'ksp_initial_guess_nonzero': True,
+#         'pc_type': 'python',
+#         'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
+#     }
+# }
+
 solver_parameters = {
     'snes_type': 'ksponly',
     'mat_type': 'aij',
@@ -121,30 +143,23 @@ solver_parameters = {
     "ksp_atol": 1e-12,
     "ksp_rtol": 1e-12,
     'pc_type': 'python',
-    'pc_python_type': 'CyclicReduction.asQMGPC',
-    'asQMGPC_opts': {
-        'ksp_type': 'chebyshev',
-        'ksp_chebyshev_esteig': '0,0.25,0,1.05',
-        'ksp_max_it': 2,
-        'ksp_initial_guess_nonzero': True,
-        'pc_type': 'python',
-        'pc_python_type': 'CyclicReduction.CyclicReductionPC3',
-    }
-}
-
-# solver_parameters = {
-#     'snes_type': 'ksponly',
-#     'mat_type': 'aij',
-#     'ksp_type': 'fgmres',
-#     "ksp_monitor_true_residual": None,
-#     "ksp_max_it": 100,
-#     "ksp_gmres_restart": 100,
-#     "ksp_atol": 1e-12,
-#     "ksp_rtol": 1e-12,
-#     'pc_type': 'python',
-#     'pc_python_type': 'CyclicReduction.CyclicReductionPC3',}
+    'pc_python_type': 'CyclicReduction.CyclicReductionPC3',}
 
 PETSc.Sys.Print("Setting up AllAtOnceSolver...")
+# solver_parameters = {'snes_type': 'ksponly',
+#                     'mat_type': 'aij',
+#                     'ksp_type': 'fgmres',
+#                     "ksp_monitor_true_residual": None,
+#                     "ksp_max_it": 100,
+#                     "ksp_atol": 1e-12,
+#                     "ksp_rtol": 1e-12,
+#                     'pc_type': 'python',
+#                     'pc_python_type': 'firedrake.ASMStarPC',
+#                     'pc_star_construct_dim': 0,
+#                     'pc_star_sub_sub_pc_type': 'lu',
+#                     'pc_star_sub_sub_pc_factor_mat_solver_type': 'umfpack',}
+# solver = LinearSolver(aaoform,  
+#                       solver_parameters,)
 solver = AllAtOnceSolver(aaoform, 
                          aaofunc, 
                          solver_parameters,
