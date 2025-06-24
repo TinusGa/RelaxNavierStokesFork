@@ -90,7 +90,7 @@ def form_function(u, v, t):
 
 PETSc.Sys.Print("Setting up AllAtOnceFunction...")
 aaofunc = AllAtOnceFunction(ensemble, time_partition, U)
-aaofunc.initial_condition.assign(u0)
+aaofunc.assign(u0)
 PETSc.Sys.Print("AllAtOnceFunction setup complete.")
 
 PETSc.Sys.Print("Setting up AllAtOnceForm...")

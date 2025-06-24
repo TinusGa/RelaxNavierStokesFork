@@ -54,8 +54,9 @@ u0.project(sin(0.25*pi*x)*cos(2*pi*y))
 bcs = [DirichletBC(U, 0, sub_domain=1)]
 
 #Set up residual
-# u = Function(U)
-u = u0.copy()
+u = Function(U)
+# u = u0.copy()
+u.project(sin(0.25*pi*x)*cos(2*pi*y))
 phi = TestFunction(U)
 
 gradu = as_vector([u.dx(0),
