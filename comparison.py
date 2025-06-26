@@ -25,7 +25,7 @@ class ProblemParameters:
         self.write_metrics = False  # Whether to write metrics to file
 
 parameters = ProblemParameters()
-time_partition = [2]
+time_partition = [1]
 parameters.N = sum(time_partition) 
 
 # Base mesh for both problems
@@ -77,8 +77,8 @@ gradphi = as_vector([phi.dx(0),
 def plus(v):
     return -0.5*jump(v,n[2]) + avg(v)
 
-F_space = inner(gradu,gradphi) * dx(degree=0)
-F_time = u.dx(2) * phi * dx(degree=0) - jump(u,n[2]) * plus(phi) * dS_h(degree=0)
+F_space = inner(gradu,gradphi) * dx
+F_time = u.dx(2) * phi * dx - jump(u,n[2]) * plus(phi) * dS_h
 F_ic = 0.5*(u-u0)*phi*ds_b
 F = F_space + F_time + F_ic
 

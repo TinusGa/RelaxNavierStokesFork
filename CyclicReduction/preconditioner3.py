@@ -566,6 +566,7 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         To ensure that the patch distribution is correct, and initialize does what it should.
         """
         # 1. Scatter global RHS x to master_rhs_vec (local "ghosted" vector)
+
         with x.global_vec_ro() as xvec:
             self.scatter_x_to_master.scatter(xvec, self.master_rhs_vec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
 
@@ -599,34 +600,37 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
 
     @profiler()
     def apply_impl(self, pc, x, y):
-        start = time()
         """
         Custom additive Schwarz-style preconditioner:
         - Assumes self.patches: tuple of PETSc IS (global indices for patches)
         - Assumes self.submats: tuple of sequential patch matrices (one per patch)
         """
-        # Scatter global RHS to local ghosted vector
-        with x.global_vec_ro() as xvec:
-            self.scatter_x_to_master.scatter(xvec, self.master_rhs_vec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+        @profiler()
+        def startup():
+            # Scatter global RHS to local ghosted vector
+            with x.global_vec_ro() as xvec:
+                self.scatter_x_to_master.scatter(xvec, self.master_rhs_vec, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
 
-        self.master_sol_vec.set(0.0) # Initialize local solution accumulator
-        # Scatter from local ghosted vector to subdomain vectors
-        for i in range(len(self.global_isets)):
-            scatter_master_to_sub = self.scatters_master_to_sub_rhs[i] # The same scatter object is used for reverse direction later.
-            sub_rhs_vec_i = self.sub_rhs_vecs[i]
-            scatter_master_to_sub.scatter(self.master_rhs_vec, sub_rhs_vec_i, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
-                 
-        # We reshape for convenience, such that each entry corresponds to a list of timesteps for a single patch 
-        rows = len(self.global_isets) // self.nlocal_timesteps
-        cols = self.nlocal_timesteps
+            self.master_sol_vec.set(0.0) # Initialize local solution accumulator
+            # Scatter from local ghosted vector to subdomain vectors
+            for i in range(len(self.global_isets)):
+                scatter_master_to_sub = self.scatters_master_to_sub_rhs[i] # The same scatter object is used for reverse direction later.
+                sub_rhs_vec_i = self.sub_rhs_vecs[i]
+                scatter_master_to_sub.scatter(self.master_rhs_vec, sub_rhs_vec_i, addv=PETSc.InsertMode.INSERT, mode=PETSc.ScatterMode.FORWARD)
+                    
+            # We reshape for convenience, such that each entry corresponds to a list of timesteps for a single patch 
+            rows = len(self.global_isets) // self.nlocal_timesteps
+            cols = self.nlocal_timesteps
 
-        # We reshape to a more convenient structure unless they
-        # have already been reshaped in a previous call to apply_impl()
-        if len(self.diag_mats) == len(self.global_isets): self.diag_mats = self.reshape_list(self.diag_mats, rows, cols)
-        if len(self.factored_diag_mats) == len(self.global_isets): self.factored_diag_mats = self.reshape_list(self.factored_diag_mats, rows, cols)
-        if len(self.offdiag_mats) == len(self.global_isets): self.offdiag_mats = self.reshape_list(self.offdiag_mats, rows, cols)
-        if len(self.sub_rhs_vecs) == len(self.global_isets): self.sub_rhs_vecs = self.reshape_list(self.sub_rhs_vecs, rows, cols)
-        if len(self.sub_sol_vecs) == len(self.global_isets): self.sub_sol_vecs = self.reshape_list(self.sub_sol_vecs, rows, cols)
+            # We reshape to a more convenient structure unless they
+            # have already been reshaped in a previous call to apply_impl()
+            if len(self.diag_mats) == len(self.global_isets): self.diag_mats = self.reshape_list(self.diag_mats, rows, cols)
+            if len(self.factored_diag_mats) == len(self.global_isets): self.factored_diag_mats = self.reshape_list(self.factored_diag_mats, rows, cols)
+            if len(self.offdiag_mats) == len(self.global_isets): self.offdiag_mats = self.reshape_list(self.offdiag_mats, rows, cols)
+            if len(self.sub_rhs_vecs) == len(self.global_isets): self.sub_rhs_vecs = self.reshape_list(self.sub_rhs_vecs, rows, cols)
+            if len(self.sub_sol_vecs) == len(self.global_isets): self.sub_sol_vecs = self.reshape_list(self.sub_sol_vecs, rows, cols)
+        startup()
+        
         
         # ---------------------------------------------------------------------------
         # Solve the first block for each patch system on temporal rank 0
@@ -637,8 +641,6 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
                 F = self.factored_diag_mats[i][0]
                 F.solve(self.sub_rhs_vecs[i][0], self.sub_sol_vecs[i][0])
                 u1s.append(self.sub_sol_vecs[i][0].copy())
-        
-        time1 = time() - start
         # ---------------------------------------------------------------------------
         # For each patch system, apply forward reduction to get L, D, f
         # ---------------------------------------------------------------------------
@@ -652,47 +654,51 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         # ---------------------------------------------------------------------------
         # INTERFACE SOLVE (processor communication)
         # ---------------------------------------------------------------------------
-        start = time()
+        # u_prevs = None
+        @profiler()
+        def interface_solve():
 
-        # Total number of temporal ranks
-        n_temporal = self.ensemble.ensemble_comm.size
+            # Total number of temporal ranks
+            n_temporal = self.ensemble.ensemble_comm.size
 
-        # Ring communication
-        size = self.ensemble.ensemble_comm.size
-        rank = self.ensemble.ensemble_comm.rank
-        dst = (rank+1) % size
-        src = (rank-1) % size
+            # Ring communication
+            size = self.ensemble.ensemble_comm.size
+            rank = self.ensemble.ensemble_comm.rank
+            dst = (rank+1) % size
+            src = (rank-1) % size
 
-        if self.temporal_rank > 0:
-            u_prevs = self.ensemble.ensemble_comm.recv(source=src, tag=0)
-            # Convert received u_prevs to PETSc Vecs
-            for i,u_prev in enumerate(u_prevs):
-                u_vec = PETSc.Vec().createSeq(len(u_prev), comm=PETSc.COMM_SELF)
-                u_vec.setArray(u_prev)  # Set the array data
-                u_prevs[i] = u_vec
-        else:
-            # If this is the first temporal rank, we use u1 as u_prev
-            u_prevs = u1s
+            if self.temporal_rank > 0:
+                u_prevs = self.ensemble.ensemble_comm.recv(source=src, tag=0)
+                # Convert received u_prevs to PETSc Vecs
+                for i,u_prev in enumerate(u_prevs):
+                    u_vec = PETSc.Vec().createSeq(len(u_prev), comm=PETSc.COMM_SELF)
+                    u_vec.setArray(u_prev)  # Set the array data
+                    u_prevs[i] = u_vec
+            else:
+                # If this is the first temporal rank, we use u1 as u_prev
+                u_prevs = u1s
 
-        u_nexts = []
-        for u_prev, L, D, f in zip(u_prevs, Ls, Ds, fs):
-            # Solve: u_next = D^{-1} (f - L * u_prev)
-            rhs = f.duplicate()
-            f.scale(-1.0)
-            L.multAdd(u_prev, f, rhs)  # rhs <- L * u_prev - f
-            rhs.scale(-1.0)  # rhs <- f - L * u_prev
+            u_nexts = []
+            for u_prev, L, D, f in zip(u_prevs, Ls, Ds, fs):
+                # Solve: u_next = D^{-1} (f - L * u_prev)
+                rhs = f.duplicate()
+                f.scale(-1.0)
+                L.multAdd(u_prev, f, rhs)  # rhs <- L * u_prev - f
+                rhs.scale(-1.0)  # rhs <- f - L * u_prev
 
-            u_next = rhs.duplicate()
-            F = self.get_factored_matrix(D, comm = fd.COMM_SELF)
-            F.solve(rhs, u_next)
-            u_nexts.append(u_next)
+                u_next = rhs.duplicate()
+                F = self.get_factored_matrix(D, comm = fd.COMM_SELF)
+                F.solve(rhs, u_next)
+                u_nexts.append(u_next)
+            
+            # Obviouslt can't send a list of PETSc vecs, but we can convert them to a list of np.ndarrays
+            if self.temporal_rank < n_temporal - 1:
+                u_nexts = [u_next.getArray() for u_next in u_nexts]
+                self.ensemble.ensemble_comm.send(u_nexts, dst, 0)
+            
+            return u_prevs
         
-        # Obviouslt can't send a list of PETSc vecs, but we can convert them to a list of np.ndarrays
-        if self.temporal_rank < n_temporal - 1:
-            u_nexts = [u_next.getArray() for u_next in u_nexts]
-            self.ensemble.ensemble_comm.send(u_nexts, dst, 0)
-        
-        time2 = time() - start
+        u_prevs = interface_solve()
         
         # All ranks now own a u_prev and u_next. Most importantly, u_prev for each processor can be used 
         # to solve for all its owning rows of the global system.
@@ -703,27 +709,22 @@ class CyclicReductionPC3(AllAtOnceBlockPCBase):
         for offdiags, factored_diags, rhss, sols, u_prev in zip(self.offdiag_mats, self.factored_diag_mats, self.sub_rhs_vecs, self.sub_sol_vecs, u_prevs):
             self.forward_substitution(offdiags, factored_diags, rhss, sols, u_prev)
 
-        start = time()
-              
-        self.sub_sol_vecs = list(sol for sublist in self.sub_sol_vecs for sol in sublist)
-        self.sub_rhs_vecs = list(rhs for sublist in self.sub_rhs_vecs for rhs in sublist)
-
-        for i in range(len(self.global_isets)):
-            sub_sol_vec_i = self.sub_sol_vecs[i]
-            scatter_master_to_sub = self.scatters_master_to_sub_rhs[i]
-            scatter_master_to_sub.scatter(sub_sol_vec_i, self.master_sol_vec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
         
-        # 3. Scatter accumulated master_sol_vec to global y
-        with y.global_vec_wo() as yvec:
-            yvec.set(0.0)
-            self.scatter_master_to_y.scatter(self.master_sol_vec, yvec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.FORWARD) # This scatter is defined from master to global.
-        
-        time3 = time() - start
+        @profiler()
+        def solution_filling():      
+            self.sub_sol_vecs = list(sol for sublist in self.sub_sol_vecs for sol in sublist)
+            self.sub_rhs_vecs = list(rhs for sublist in self.sub_rhs_vecs for rhs in sublist)
 
-        # PETSc.Sys.Print(f"Memory address of y: {id(y)}")
-        self.appctx['time1'] += time1
-        self.appctx['time2'] += time2
-        self.appctx['time3'] += time3
+            for i in range(len(self.global_isets)):
+                sub_sol_vec_i = self.sub_sol_vecs[i]
+                scatter_master_to_sub = self.scatters_master_to_sub_rhs[i]
+                scatter_master_to_sub.scatter(sub_sol_vec_i, self.master_sol_vec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.REVERSE)
+            
+            # 3. Scatter accumulated master_sol_vec to global y
+            with y.global_vec_wo() as yvec:
+                yvec.set(0.0)
+                self.scatter_master_to_y.scatter(self.master_sol_vec, yvec, addv=PETSc.InsertMode.ADD_VALUES, mode=PETSc.ScatterMode.FORWARD) # This scatter is defined from master to global.
+        solution_filling()
 
 
     @profiler()

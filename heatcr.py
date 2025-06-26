@@ -15,7 +15,10 @@ import csv
 
 class ProblemParameters:
     def __init__(self):
-        self.M = 4 # Number of elements in the base mesh
+        self.Nslice = 4
+        self.Pt = 4
+        self.time_partition = [self.Nslice] * self.Pt
+        self.M = 9 # Number of elements in the base mesh
         self.mref = 1 # Number of mesh refinement levels for multigrid
         self.dt = 0.001
         self.R = Constant(1) # Reynolds number
@@ -27,6 +30,8 @@ class ProblemParameters:
 
 parameters = ProblemParameters()
 
+# def ReductionHeat(parameters = ProblemParameters()):
+
 # 1. ENSEMBLE and MESH setup
 # ----------------------------------------------------
 start = time()
@@ -36,7 +41,7 @@ start = time()
 # time_partition = [15]*8
 # time_partition = [5]*24
 
-time_partition = [4,4]
+time_partition = [4,4,4,4]
 
 ensemble = create_ensemble(time_partition, comm=COMM_WORLD)
 
@@ -140,8 +145,8 @@ solver_parameters = {
     "ksp_monitor_true_residual": None,
     "ksp_max_it": 100,
     "ksp_gmres_restart": 100,
-    "ksp_atol": 1e-12,
-    "ksp_rtol": 1e-12,
+    "ksp_atol": 1e-05,
+    "ksp_rtol": 1e-05,
     'pc_type': 'python',
     'pc_python_type': 'CyclicReduction.CyclicReductionPC3',}
 
