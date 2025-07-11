@@ -1,33 +1,57 @@
 # A Parallel-in-Time Solution for Parabolic PDEs with Multigrid Waveform Relaxation
 
-Code and implementations supplement to my master's thesis 'A Parallel-in-Time Solution for Parabolic PDEs with Multigrid Waveform Relaxation' (not yet public). 
-This repository contains all code relevant to experiments and results therein. 
+This repository contains the source code and implementation for the master's thesis, *"A Parallel-in-Time Solution for Parabolic PDEs with Multigrid Waveform Relaxation."*
 
-This repository is a fork from the RelaxNavierStokes repository found here: https://github.com/JamesJackaman/RelaxNavierStokes.git. 
+This project is a fork of the **RelaxNavierStokes** repository, which can be found [here](https://github.com/JamesJackaman/RelaxNavierStokes.git).
 
-## Installation
-This repository depends on Firedrake and asQ. An installation guide for Firedrake can be found here: https://www.firedrakeproject.org/install.html. The asQ GitHub repository can be found here: https://github.com/firedrakeproject/asQ.git
+---
 
-## Repository Structure
-The repository structure is not organized, and filenames can be misleading. In development, both the RelaxNavierStokes and asQ repositories were cloned into the current repository for efficient testing and can be found in the folders \texttt{asQ} and \texttt{RelaxNavierStokes}. Accompanying test and example files from these repositories are also included in this repo. 
-No changes have been made to the RelaxNavierStokes repo, but changes have been made to the asQ repo, namely in the \texttt{AllAtOnceJacobian} for explicit assembly of Jacobians required for the methodologies of the implementation.
+## Dependencies
 
-The core functionality of this repo is found under the folder \texttt{CyclicReduction}, with the most recent changes and updated functionality in \texttt{preconditioner3.py}. 
+This project relies on **Firedrake** and **asQ**.
 
-Remaining files are either test files for code development or experiments relevant to the master's thesis.
+* **Firedrake:** An installation guide is available at the [Firedrake project website](https://www.firedrakeproject.org/install.html).
+* **asQ:** The official GitHub repository can be found [here](https://github.com/firedrakeproject/asQ.git).
 
-## Code
+---
+
+## 📂 Repository Structure
+
+This repository contains several key directories.
+
+* `CyclicReduction/`: This directory holds the core functionality of the project. The most recent and updated implementation of the preconditioner can be found in `preconditioner3.py`.
+* `asQ/`: This is a cloned version of the asQ repository. Modifications have been made to the `AllAtOnceJacobian` for explicit assembly of Jacobians required by the implemented methodologies.
+* `RelaxNavierStokes/`: A cloned version of the original repository, with no modifications.
+
+The remaining files are either scripts used for development testing or for running the experiments detailed in the thesis.
+
+---
+
+## 🚀 Running Experiments
+
+This section outlines how to run the experiments for different partial differential equations.
+
 ### Heat Equation
-For the homogenous heat equation, the main test for the application of the preconditioner in \texttt{preconditioner3.py} can be run with the file \texttt{heat_test.py} for various configurations of processors and problem parameters. This will run the \texttt{heat_run.py} file for the provided configurations. 
 
-Comparison between implementations made here and the one from RelaxNavierStokes, and asQ can be done with the files \texttt{heatcr.py}, \texttt{heatrn.py} and \texttt{heatasQ.py} repsectively. 
+To test the preconditioner from `preconditioner3.py` on the homogeneous heat equation, run the `heat_test.py` script. This script will execute `heat_run.py` with various processor configurations and problem parameters.
 
-### Fisher equation
-For the nonlinear KPP-Fisher equation, comparisons between the implementations here and the one from RelaxNavierStokes can be done with the files \texttt{fishercr.py} and \texttt{fisherrn.py} respectively
+For a direct comparison between different implementations, you can use the following scripts:
+* **This implementation:** `heatcr.py`
+* **RelaxNavierStokes:** `heatrn.py`
+* **asQ:** `heatasQ.py`
+
+### Fisher Equation
+
+For the nonlinear KPP-Fisher equation, you can compare this project's implementation with the RelaxNavierStokes version using these files:
+* **This implementation:** `fishercr.py`
+* **RelaxNavierStokes:** `fisherrn.py`
 
 ### Multigrid
-Comparisons of multigrid with block Jacobi preconditioners can be done with the file \texttt{multigrid_test.py}
 
-### Plots
-Most files can be run with setting a plot parameter to True. This will save the simulation under the \texttt{ParaView} folder and can be visualized with the ParaView software. 
+To compare the performance of multigrid with block Jacobi preconditioners, run the `multigrid_test.py` script.
 
+---
+
+## 📊 Visualization
+
+Most experiment files can be run with a plot parameter set to `True`. This will save the simulation output in the `ParaView/` directory. The results can then be visualized using the **ParaView** software.
